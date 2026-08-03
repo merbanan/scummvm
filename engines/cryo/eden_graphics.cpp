@@ -28,6 +28,8 @@
 #include "graphics/blit.h"
 #include "video/hnm_decoder.h"
 
+#include "cryo/hnm1decoder.h"
+
 namespace Cryo {
 
 // Main view rows: 0-15 top bar, 16-175 picture, 176-199 bottom bar
@@ -1216,9 +1218,22 @@ void EdenGraphics::showMovie(int16 num, char arg1) {
 
 	Video::VideoDecoder *decoder = new Video::HNMDecoder(g_system->getScreenFormat(), false, palette);
 	if (!decoder->loadStream(stream)) {
-		warning("Could not load movie %d", num);
+		// Some movies use an older, untagged HNM variant that HNMDecoder
+		// doesn't recognize. loadStream() always takes ownership of the
+		// stream, even on failure, so a fresh one is needed for this
+		// second attempt.
 		delete decoder;
-		return;
+		stream = _game->loadSubStream(num - 1 + 485);
+		decoder = new HNM1Decoder();
+		if (!stream || !decoder->loadStream(stream)) {
+			// A handful of movies (e.g. the Cryo/Virgin logos) are actually
+			// non-video resources (VOC audio) under the same numbering and
+			// aren't played back at all yet; this isn't worth alarming
+			// players with, but still worth a debug-level breadcrumb.
+			debug("Could not load movie %d", num);
+			delete decoder;
+			return;
+		}
 	}
 
 	if (_game->_globals->_curVideoNum == 92) {
