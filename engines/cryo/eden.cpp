@@ -6892,7 +6892,12 @@ char EdenGame::testCondition(int16 index) {
 				uint16 value2 = fetchValue();
 				value = operation(op, value, value2);
 			} else {
-				assert(sp < stack + 32);
+				// Each pass pushes a value and an operator, and the reduction
+				// below pushes a final value
+				if (sp + 3 > stack + ARRAYSIZE(stack)) {
+					warning("testCondition: condition stack overflow");
+					return false;
+				}
 				*sp++ = value;
 				*sp++ = op;
 				break;
