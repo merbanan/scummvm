@@ -2241,8 +2241,11 @@ void EdenGame::getDataSync() {
 // Original name: ReadNombreFrames
 int16 EdenGame::readFrameNumber() {
 	int16 num = 0;
-	_animationTable = _gameLipsync + 7260 + 2;    //TODO: fix me
-	while (*_animationTable++ != 0xFF)
+	// Stop one byte short of the end: animCharacter() indexes the table with
+	// frame numbers up to and including the returned count
+	byte *end = _gameLipsync + LIPSYNC_BUFFER_SIZE - 1;
+	_animationTable = _gameLipsync + LIPSYNC_ANIM_TABLE_SIZE + 2;
+	while (_animationTable < end && *_animationTable++ != 0xFF)
 		num++;
 	return num;
 }
