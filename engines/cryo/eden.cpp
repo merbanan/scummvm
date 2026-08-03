@@ -1957,14 +1957,9 @@ void EdenGame::loadCharacter(perso_t *perso) {
 		return;
 
 	if (perso->_spriteBank != _globals->_characterImageBank) {
-		int16 rectIdx = perso->_id;
-		if (rectIdx >= 19)
-			rectIdx = 18;
-		_graphics->setCurCharRect(&_characterRects[rectIdx]);
-		int16 arrIdx = perso->_id;
-		if (arrIdx >= 20)
-			arrIdx = 19;
-		dword_30728 = _characterArray[arrIdx];
+		// Both tables only cover the speaking characters, ids 0 to 18
+		_graphics->setCurCharRect(&_characterRects[MIN<int>(perso->_id, ARRAYSIZE(_characterRects) - 1)]);
+		dword_30728 = _characterArray[MIN<int>(perso->_id, ARRAYSIZE(_characterArray) - 1)];
 		ef_perso();
 		_globals->_characterImageBank = perso->_spriteBank;
 		useBank(_globals->_characterImageBank);
