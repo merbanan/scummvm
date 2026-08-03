@@ -35,6 +35,11 @@ namespace Cryo {
 // The subtitle view is 60 rows tall, so at most 6 lines fit in it
 #define MAX_SUBTITLE_LINES 6
 
+// _gameLipsync holds the animation table followed by the lipsync data area
+#define LIPSYNC_ANIM_TABLE_SIZE 7260
+#define LIPSYNC_DATA_SIZE 1024
+#define LIPSYNC_BUFFER_SIZE (LIPSYNC_ANIM_TABLE_SIZE + LIPSYNC_DATA_SIZE)
+
 /*
 Glossary
   room      - a single game world's screen. referenced by 16-bit number 0xAALL, where AA - area# and LL - location#

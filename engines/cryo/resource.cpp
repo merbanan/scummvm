@@ -226,7 +226,12 @@ int EdenGame::loadSound(uint16 num) {
 		unsigned int chunkLen = FROM_LE_32(val);
 
 		if (chunkType == 5) {
-			_bigfile.read(_gameLipsync + 7260, chunkLen);
+			if (chunkLen > LIPSYNC_DATA_SIZE) {
+				warning("Lipsync chunk too large (%u bytes), truncating to %d", chunkLen, LIPSYNC_DATA_SIZE);
+				_bigfile.read(_gameLipsync + LIPSYNC_ANIM_TABLE_SIZE, LIPSYNC_DATA_SIZE);
+				_bigfile.skip(chunkLen - LIPSYNC_DATA_SIZE);
+			} else
+				_bigfile.read(_gameLipsync + LIPSYNC_ANIM_TABLE_SIZE, chunkLen);
 			chunkType = _bigfile.readByte();
 			_bigfile.read(&val, 3);
 			chunkLen = FROM_LE_32(val);
@@ -462,7 +467,11 @@ bool EdenGame::ReadDataSyncVOC(unsigned int num) {
 		loadpartoffile(resNum, &chunkLen, filePos, 3);
 		filePos += 3;
 		chunkLen = FROM_LE_32(chunkLen);
-		loadpartoffile(resNum, _gameLipsync + 7260, filePos, chunkLen);
+		if (chunkLen > LIPSYNC_DATA_SIZE) {
+			warning("Lipsync chunk too large (%u bytes), truncating to %d", chunkLen, LIPSYNC_DATA_SIZE);
+			chunkLen = LIPSYNC_DATA_SIZE;
+		}
+		loadpartoffile(resNum, _gameLipsync + LIPSYNC_ANIM_TABLE_SIZE, filePos, chunkLen);
 		return true;
 	}
 	return false;
@@ -472,8 +481,8 @@ bool EdenGame::ReadDataSync(uint16 num) {
 	if (_vm->getPlatform() == Common::kPlatformMacintosh) {
 		long pos = READ_LE_UINT32(_gameLipsync + num * 4);
 		if (pos != -1) {
-			long len = 1024;
-			loadpartoffile(1936, _gameLipsync + 7260, pos, len);
+			long len = LIPSYNC_DATA_SIZE;
+			loadpartoffile(1936, _gameLipsync + LIPSYNC_ANIM_TABLE_SIZE, pos, len);
 			return true;
 		}
 	}

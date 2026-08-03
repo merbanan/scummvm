@@ -1811,7 +1811,7 @@ void EdenGame::animCharacter() {
 	}
 	if (_animateTalking) {
 		if (!_animationTable) {
-			_animationTable = _gameLipsync + 7262;    //TODO: fix me
+			_animationTable = _gameLipsync + LIPSYNC_ANIM_TABLE_SIZE + 2;
 			if (!_backgroundSaved) {
 				_graphics->saveMouthBackground();
 				_backgroundSaved = true;
@@ -4053,7 +4053,7 @@ void EdenGame::allocateBuffers() {
 	ALLOC(_mainBankBuf, 0x9400, byte);
 	ALLOC(_glowBuffer, 0x2800, byte);
 	ALLOC(_gameFont, 0x900, byte);
-	ALLOC(_gameLipsync, 0x205C, byte);
+	ALLOC(_gameLipsync, LIPSYNC_BUFFER_SIZE, byte);
 	ALLOC(_musicBuf, kMaxMusicSize, byte);
 #undef ALLOC
 }
