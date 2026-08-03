@@ -43,6 +43,14 @@
 
 namespace Cryo {
 
+// Panel save/load slots: icons 105-108 list the saved games, 109-111 are the
+// three slots to save into. Sprites 8 to 10 of the panel bank are the slot
+// labels to draw into the load box.
+static const int16 kFirstLoadIcon = 105;
+static const int16 kFirstSaveIcon = 109;
+static const int16 kNumSaveSlots = 3;
+static const int16 kFirstSlotSprite = 8;
+
 #define Z_RESET -3400
 #define Z_STEP 200
 #define Z_UP 1
@@ -5301,17 +5309,17 @@ void EdenGame::testvoice() {
 
 void EdenGame::load() {
 	char name[132];
+	int16 slot = _curSpot2 - &_gameIcons[kFirstLoadIcon];
+	if (slot < 0 || slot >= kNumSaveSlots)
+		return;
+
 	_gameLoaded = false;
 	byte oldMusic = _globals->_currMusicNum;   //TODO: from uint16 to byte?!
 	fademusica0(1);
 	desktopcolors();
 	FlushEvents(-1, 0);
-//	if(OpenDialog(0, 0)) //TODO: write me
-	{
-		// TODO
-		Common::strcpy_s(name, "edsave1.000");
-		loadgame(name);
-	}
+	getSaveStateName(name, sizeof(name), slot);
+	loadgame(name);
 	_vm->hideMouse();
 	CLBlitter_FillScreenView(0xFFFFFFFF);
 	_graphics->fadeToBlack(3);
@@ -5373,13 +5381,16 @@ void EdenGame::initafterload() {
 
 void EdenGame::save() {
 	char name[260];
+	int16 slot = _curSpot2 - &_gameIcons[kFirstSaveIcon];
+	if (slot < 0 || slot >= kNumSaveSlots)
+		return;
+
 	fademusica0(1);
 	desktopcolors();
 	FlushEvents(-1, 0);
-	//SaveDialog(byte_37150, byte_37196->ff_A);
-	//TODO
-	Common::strcpy_s(name, "edsave1.000");
+	getSaveStateName(name, sizeof(name), slot);
 	saveGame(name);
+	displaySaveSlots();
 	_vm->hideMouse();
 	CLBlitter_FillScreenView(0xFFFFFFFF);
 	_graphics->fadeToBlack(3);
@@ -5672,6 +5683,7 @@ void EdenGame::clickTapeCursor() {
 void EdenGame::displayPanel() {
 	useBank(65);
 	_graphics->drawSprite(0, 0, 16);
+	displaySaveSlots();
 	_graphics->paneltobuf();
 	displayLanguage();
 	displayCursors();
@@ -6425,6 +6437,26 @@ void EdenGame::phase544() {
 void EdenGame::phase560() {
 	_persons[PER_ELOI]._roomNum = 3073;
 	_gameRooms[127]._exits[1] = 0;
+}
+
+void EdenGame::getSaveStateName(char *dest, int size, int16 slot) {
+	Common::sprintf_s(dest, size, "edsave1.%03d", slot);
+}
+
+// Draw the names of the existing saved games into the panel's load box, which
+// is empty artwork. The bank holds a ready made label per slot, so they match
+// the labels drawn into the save box below.
+void EdenGame::displaySaveSlots() {
+	char name[32];
+	useBank(65);
+	for (int16 slot = 0; slot < kNumSaveSlots; slot++) {
+		getSaveStateName(name, sizeof(name), slot);
+		if (!g_system->getSavefileManager()->exists(name))
+			continue;
+
+		Icon *icon = &_gameIcons[kFirstLoadIcon + slot];
+		_graphics->drawSprite(kFirstSlotSprite + slot, icon->sx, icon->sy);
+	}
 }
 
 void EdenGame::saveGame(char *name) {
