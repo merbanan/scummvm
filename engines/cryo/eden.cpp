@@ -3380,13 +3380,20 @@ bool EdenGame::dial_scan(Dialog *dial) {
 	}
 
 	if (!skipFl) {
-		perso_t *perso;
-		for (perso = _persons; !(perso->_partyMask == mask && perso->_roomNum == _globals->_roomNum); perso++)
-			; //Find matching
+		perso_t *perso = _persons;
+		perso_t *lastPerso = &_persons[ARRAYSIZE(_persons)];
+		while (perso != lastPerso && !(perso->_partyMask == mask && perso->_roomNum == _globals->_roomNum))
+			perso++; //Find matching
 
-		_globals->_characterPtr = perso;
-		initCharacterPointers(perso);
-		no_perso();
+		// Leave the current character in place if the line names one who is
+		// not here, rather than acting on whatever follows the array. The
+		// line itself still has to run, it may carry a phase change.
+		if (perso != lastPerso) {
+			_globals->_characterPtr = perso;
+			initCharacterPointers(perso);
+			no_perso();
+		} else
+			warning("dial_scan: no person with mask %04X in room %04X", mask, _globals->_roomNum);
 	}
 
 	hidx = _globals->_dialogPtr->_textCondHiMask;
