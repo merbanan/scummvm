@@ -3504,7 +3504,10 @@ void EdenGame::chronoEvent() {
 	addTime(5);
 	if (!(_globals->_chronoFlag & 1))
 		return;
-	_globals->_chrono -= 200;
+	if (_globals->_chrono >= 200)
+		_globals->_chrono -= 200;
+	else
+		_globals->_chrono = 0;
 	if (_globals->_chrono == 0)
 		_globals->_chronoFlag |= 2;
 	if (!(_globals->_chronoFlag & 2))
