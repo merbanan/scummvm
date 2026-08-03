@@ -7061,7 +7061,8 @@ uint8 EdenGame::getByteVar(uint16 offset) {
 
 uint16 EdenGame::getWordVar(uint16 offset) {
 	switch (offset) {
-		VAR(4, _randomNumber);   //TODO: this is randomized in pc ver and used by some conds. always zero on mac
+	case 4:
+		return _vm->_rnd->getRandomNumber(0xFFFF);
 		VAR(6, _gameTime);
 		VAR(8, _gameDays);
 		VAR(0xA, _chrono);
