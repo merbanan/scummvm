@@ -5898,7 +5898,7 @@ void EdenGame::perso_ici(int16 action) {
 
 // Original name: setpersohere
 void EdenGame::setCharacterHere() {
-	debug("setCharacterHere, perso is %d", (int)(_globals->_characterPtr - _persons));
+	debug("setCharacterHere, perso is %d", _globals->_characterPtr ? (int)(_globals->_characterPtr - _persons) : -1);
 	_globals->_partyOutside = 0;
 	_globals->_party = 0;
 	_globals->_roomCharacterPtr = nullptr;
