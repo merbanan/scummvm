@@ -27,6 +27,10 @@
 #include "graphics/surface.h"
 #include "video/video_decoder.h"
 
+namespace Audio {
+class SeekableAudioStream;
+}
+
 namespace Common {
 class SeekableReadStream;
 }
@@ -34,27 +38,44 @@ class SeekableReadStream;
 namespace Cryo {
 
 /**
- * Decoder for an untagged, undocumented predecessor of Cryo's HNM4 video
- * format, found mixed in with regular HNM4 movies in Lost Eden's EDEN.DAT.
+ * Decoder for the untagged predecessor of Cryo's HNM4 video format. Lost Eden
+ * stores a number of movies in it (the Cryo and Virgin Interactive logos,
+ * several world flyovers, ...) alongside its regular HNM4 ones.
  *
- * Unlike HNM4, there is no magic tag, no superchunk framing, and no
- * interleaved audio. The stream layout is:
+ * The container has no magic tag and no superchunk framing:
  *
- *   uint16 LE dataOffset   - offset where frame data begins
- *   palette chunk          - same start/count/RGB triples encoding as
- *                            HNM4's PL chunk, terminated by 0xFF,0xFF
+ *   uint16 LE dataOffset   - offset at which the frame records begin
+ *   palette                - start/count/RGB triples, 6 bits per component,
+ *                            terminated by 0xFF,0xFF
  *   byte 0xFF              - marker
- *   uint32 LE offsets[N+1] - cumulative byte offsets of each of the N
- *                            frames, relative to dataOffset; offsets[N]
- *                            equals the number of bytes remaining in the
- *                            stream (i.e. it's an end marker, not a frame)
- *   N frames, each individually compressed to a fixed 320x160 image
+ *   uint32 LE offsets[N+1] - offset of each of the N frame records, relative
+ *                            to dataOffset. offsets[N] is the number of bytes
+ *                            left in the stream, i.e. an end marker.
  *
- * Each frame starts with a 12-byte sub-header that mirrors (and, like
- * HNM4's own intraframe header, is unused by) HNM4's width/height/mode
- * fields, followed by an LZ-compressed stream using the same scheme as
- * EdenGame::expandHSQ() (see resource.cpp) but with a 16-bit, LSB-first
- * bit reader rather than HNM4's own 32-bit, MSB-first one.
+ * A frame record is a list of chunks:
+ *
+ *   uint16 LE recordSize   - size of the whole record
+ *   then, repeatedly:
+ *     uint16 tag
+ *       "sd", "pl": uint16 LE length (counting the four byte header), data.
+ *                   "sd" holds a slice of one VOC file spanning the whole
+ *                   movie, "pl" a palette update in the format used above.
+ *       anything else: an image chunk, always last in the record:
+ *         uint16 LE flags/width, uint16 LE (mode << 8 | height),
+ *         six byte compression header, compressed data.
+ *
+ * Images decompress to width * height bytes, optionally preceded by up to
+ * four bytes of padding, and are drawn at the top of the frame; rows past
+ * the chunk's height keep what the previous frame left there. Only mode 0xFE,
+ * a complete picture, is handled: mode 0xFF renders into an off screen buffer
+ * instead, so movies using it are rejected rather than shown incorrectly.
+ * One of two compression schemes is used, selected by a checksum over the six
+ * byte compression header:
+ *
+ *   0xAB - the LZ77 variant also used by EdenGame::expandHSQ() (resource.cpp)
+ *   0xAD - two stages: a byte oriented LZ77 pass expands the data into a
+ *          scratch area at the end of the output buffer, then a bit driven
+ *          RLE pass expands that into the image
  */
 class HNM1Decoder : public Video::VideoDecoder {
 public:
@@ -65,50 +86,66 @@ public:
 	void close() override;
 
 private:
+	enum {
+		kWidth = 320,
+		kMaxHeight = 200,
+		// Neither the container nor the chunks encode a frame delay. This is
+		// the rate the movies with sound play back at, and matches the delay
+		// the regular HNM decoder uses for soundless HNM4 clips.
+		kFrameDelayMs = 80
+	};
+
 	class HNM1VideoTrack : public VideoTrack {
 	public:
 		HNM1VideoTrack(Common::SeekableReadStream *stream, uint32 dataOffset,
-		               const Common::Array<uint32> &frameOffsets, const byte *palette);
+		               const Common::Array<uint32> &frameOffsets, const byte *palette,
+		               uint16 height);
 		~HNM1VideoTrack() override;
 
-		bool endOfTrack() const override;
+		bool endOfTrack() const override { return _curFrame + 1 >= getFrameCount(); }
 		uint16 getWidth() const override { return kWidth; }
-		uint16 getHeight() const override { return kHeight; }
+		uint16 getHeight() const override { return _height; }
 		Graphics::PixelFormat getPixelFormat() const override { return _surface.format; }
 		int getCurFrame() const override { return _curFrame; }
 		int getFrameCount() const override { return _frameOffsets.size() - 1; }
-		uint32 getNextFrameStartTime() const override { return (_curFrame + 1) * (uint32)kFrameDelayMs; }
+		uint32 getNextFrameStartTime() const override {
+			return (uint32)(_curFrame + 1) * kFrameDelayMs;
+		}
 		const Graphics::Surface *decodeNextFrame() override;
 		const byte *getPalette() const override { _dirtyPalette = false; return _palette.data(); }
 		bool hasDirtyPalette() const override { return _dirtyPalette; }
 
 	private:
-		enum {
-			kWidth = 320,
-			kHeight = 160,
-			// No audio and no header field encodes a delay; this matches the
-			// regular default used elsewhere for soundless HNM4 clips.
-			kFrameDelayMs = 80,
-			// Every frame observed so far starts with this fixed-size,
-			// unused sub-header (see class comment).
-			kFrameSubHeaderSize = 12,
-			// The LZ stream's final copy can overshoot the logical end of
-			// the frame by a handful of bytes (observed up to 4); allocate
-			// some slack so that harmless trailing padding isn't mistaken
-			// for a decode failure.
-			kFrameBufferSlack = 16
-		};
+		/** Decode an image chunk into the surface. */
+		bool decodeImage(const byte *chunk, uint32 size);
+		/** Apply a palette update chunk. */
+		void updatePalette(const byte *data, uint32 size);
 
 		Common::SeekableReadStream *_stream; // Not owned
 		uint32 _dataOffset;
 		Common::Array<uint32> _frameOffsets;
 		int _curFrame;
+		uint16 _height;
+
 		Graphics::Surface _surface;
 		Graphics::Palette _palette;
 		mutable bool _dirtyPalette;
-		byte *_frameBuffer;
-		byte *_packedBuffer;
-		uint32 _packedBufferAlloc;
+
+		byte *_record;
+		uint32 _recordAlloc;
+		byte *_decodeBuffer;
+	};
+
+	class HNM1AudioTrack : public AudioTrack {
+	public:
+		HNM1AudioTrack(Audio::SeekableAudioStream *stream, Audio::Mixer::SoundType soundType);
+		~HNM1AudioTrack() override;
+
+	protected:
+		Audio::AudioStream *getAudioStream() const override;
+
+	private:
+		Audio::SeekableAudioStream *_stream;
 	};
 
 	Common::SeekableReadStream *_stream;

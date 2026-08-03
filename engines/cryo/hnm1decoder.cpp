@@ -21,86 +21,331 @@
 
 #include "cryo/hnm1decoder.h"
 
+#include "audio/decoders/raw.h"
+#include "audio/decoders/voc.h"
 #include "common/endian.h"
+#include "common/memstream.h"
 #include "common/stream.h"
 #include "common/textconsole.h"
 
 namespace Cryo {
 
-// Decompress a stream using the same scheme as EdenGame::expandHSQ()
-// (resource.cpp): a 16-bit, LSB-first bit-oriented LZ77 variant. Unlike
-// expandHSQ(), this takes explicit input/output bounds instead of trusting
-// the stream to self-terminate at the right place.
-static bool decodeHSQFrame(const byte *src, uint32 srcSize, byte *dst, uint32 dstSize) {
-	const byte *srcEnd = src + srcSize;
-	byte *dstStart = dst;
-	byte *dstEnd = dst + dstSize;
+// Number of bytes the decompressors may write past the logical end of a frame:
+// a run or a copy is never cut short, so the last one can overshoot a little.
+static const uint32 kDecodeSlack = 512;
+
+// Chunk tags, as the little endian words they are compared against
+static const uint16 kChunkSound   = 0x6473; // "sd"
+static const uint16 kChunkPalette = 0x6C70; // "pl"
+
+/**
+ * The LZ77 variant used by EdenGame::expandHSQ() (resource.cpp), with a 16 bit
+ * little endian, least significant bit first queue. Unlike expandHSQ() this
+ * takes explicit bounds instead of trusting the stream to end in the right
+ * place.
+ */
+static bool decodeHSQ(const byte *src, uint32 srcSize, byte *dst, uint32 dstSize, uint32 dstCapacity) {
+	uint32 pos = 0, out = 0;
 	uint16 queue = 0;
 
-	auto getBit = [&]() -> int {
+	auto nextBit = [&]() -> int {
 		int bit = queue & 1;
 		queue >>= 1;
 		if (!queue) {
-			if (src + 2 > srcEnd)
+			if (pos + 2 > srcSize)
 				return -1;
-			queue = src[0] | (src[1] << 8);
-			src += 2;
+			queue = READ_LE_UINT16(src + pos);
+			pos += 2;
 			bit = queue & 1;
 			queue = (queue >> 1) | 0x8000;
 		}
 		return bit;
 	};
 
-	for (;;) {
-		int bit = getBit();
+	while (out < dstSize) {
+		int bit = nextBit();
 		if (bit < 0)
 			return false;
+
 		if (bit) {
-			if (src >= srcEnd || dst >= dstEnd)
+			if (pos >= srcSize || out >= dstCapacity)
 				return false;
-			*dst++ = *src++;
-		} else {
-			int len = 0;
-			int16 ofs;
-			bit = getBit();
-			if (bit < 0)
-				return false;
-			if (!bit) {
-				for (int i = 0; i < 2; i++) {
-					bit = getBit();
-					if (bit < 0)
-						return false;
-					len = (len << 1) | bit;
-				}
-				if (src >= srcEnd)
+			dst[out++] = src[pos++];
+			continue;
+		}
+
+		uint32 length = 0;
+		int32 offset;
+		bit = nextBit();
+		if (bit < 0)
+			return false;
+
+		if (!bit) {
+			for (int i = 0; i < 2; i++) {
+				bit = nextBit();
+				if (bit < 0)
 					return false;
-				ofs = 0xFF00 | *src++;
-			} else {
-				if (src + 2 > srcEnd)
-					return false;
-				uint16 tmp = src[0] | (src[1] << 8);
-				src += 2;
-				len = tmp & 7;
-				ofs = (tmp >> 3) | 0xE000;
-				if (!len) {
-					if (src >= srcEnd)
-						return false;
-					len = *src++;
-					if (!len)
-						return true; // End of frame, regardless of exact byte count reached
-				}
+				length = (length << 1) | bit;
 			}
-			byte *from = dst + ofs;
-			if (from < dstStart)
+			if (pos >= srcSize)
 				return false;
-			len += 2;
-			for (; len > 0; len--) {
-				if (dst >= dstEnd || from >= dstEnd)
+			offset = (int32)(0xFF00 | src[pos++]) - 0x10000;
+		} else {
+			if (pos + 2 > srcSize)
+				return false;
+			uint16 tmp = READ_LE_UINT16(src + pos);
+			pos += 2;
+			length = tmp & 7;
+			offset = (int32)((tmp >> 3) | 0xE000) - 0x10000;
+			if (!length) {
+				if (pos >= srcSize)
 					return false;
-				*dst++ = *from++;
+				length = src[pos++];
+				if (!length)
+					return true; // End of stream
 			}
 		}
+
+		if ((int32)out + offset < 0)
+			return false;
+		uint32 from = (uint32)((int32)out + offset);
+		for (length += 2; length > 0; length--) {
+			if (out >= dstCapacity)
+				return false;
+			dst[out++] = dst[from++];
+		}
 	}
+
+	return true;
+}
+
+/**
+ * First stage of the 0xAD scheme (FUN_1000_3b6d in the DOS executable): a byte
+ * oriented LZ77. Control bytes below 0x80 are literals, biased by @p bias.
+ * Back references come in pairs which share the extra bits of a single second
+ * byte, so the first of a pair takes two bytes and the second only one.
+ */
+static bool decodeLZ(const byte *src, uint32 srcSize, uint32 &srcUsed, byte *dst,
+                     uint32 dstPos, uint32 dstEnd, uint32 dstCapacity, byte bias) {
+	uint32 pos = 0;
+	byte extras = 0;
+	bool second = false;
+
+	while (dstPos < dstEnd) {
+		if (pos >= srcSize || dstPos >= dstCapacity)
+			return false;
+
+		byte control = src[pos];
+		if (control < 0x80) {
+			// A zero stays zero, anything else picks up the bias
+			dst[dstPos++] = control ? (byte)(control + bias) : 0;
+			pos++;
+			continue;
+		}
+
+		uint32 distance, length;
+		if (!second) {
+			if (pos + 2 > srcSize)
+				return false;
+			extras = src[pos + 1];
+			distance = (byte)((byte)(control << 1) + ((extras >> 4) & 1)) + 1u;
+			length = (extras >> 5) + 2u;
+			pos += 2;
+			second = true;
+		} else {
+			byte low = extras & 0x0F;
+			distance = (byte)((byte)(control << 1) + (low & 1)) + 1u;
+			length = (low >> 1) + 2u;
+			pos++;
+			second = false;
+		}
+
+		if (distance > dstPos)
+			return false;
+		uint32 from = dstPos - distance;
+		for (; length > 0; length--) {
+			if (dstPos >= dstCapacity)
+				return false;
+			dst[dstPos++] = dst[from++];
+		}
+	}
+
+	srcUsed = pos;
+	return true;
+}
+
+/**
+ * Second stage of the 0xAD scheme (LAB_1000_39f3 and LAB_1000_3aaf): a run
+ * length pass driven by a bit stream which directly follows the first stage's
+ * data, while the bytes it works on come from the first stage's output.
+ *
+ * @p longRunsFirst picks between the two orderings of the length code the
+ * original uses, selected by bit 7 of the compression flags.
+ */
+static bool decodeRLE(const byte *bits, uint32 bitsSize, byte *dst, uint32 dstCapacity,
+                      uint32 byteSrc, uint32 dstPos, uint32 dstEnd, bool longRunsFirst) {
+	uint32 pos = 0;
+	uint16 queue = 0;
+	uint32 run = 0;
+	bool failed = false;
+
+	// A 16 bit most significant bit first queue with a set sentinel bit
+	// appended: the queue has run out once the sentinel is shifted out, which
+	// is exactly when it reads back as zero.
+	auto nextBit = [&]() -> int {
+		int bit = (queue >> 15) & 1;
+		queue = (uint16)(queue << 1);
+		if (!queue) {
+			if (pos + 2 > bitsSize) {
+				failed = true;
+				return 0;
+			}
+			uint16 word = READ_LE_UINT16(bits + pos);
+			pos += 2;
+			queue = (uint16)((word << 1) | 1);
+			return (word >> 15) & 1;
+		}
+		return bit;
+	};
+
+	auto fill = [&](byte value, uint32 count) {
+		while (count-- > 0) {
+			if (dstPos >= dstCapacity) {
+				failed = true;
+				return;
+			}
+			dst[dstPos++] = value;
+		}
+	};
+
+	// Long runs take their length from the byte stream, and leave a length
+	// behind for the next long run to pick up.
+	auto longRun = [&](byte value) {
+		uint32 count;
+		if (run > 4) {
+			count = run;
+			run = 0;
+		} else if (run == 4) {
+			if (pos >= bitsSize) {
+				failed = true;
+				return;
+			}
+			count = bits[pos++] + 0x14u;
+			run = 0;
+		} else {
+			if (pos >= bitsSize) {
+				failed = true;
+				return;
+			}
+			byte length = bits[pos];
+			if (length >> 4) {
+				count = (length >> 4) + 4u;
+				pos++;
+			} else {
+				if (pos + 2 > bitsSize) {
+					failed = true;
+					return;
+				}
+				count = bits[pos + 1] + 0x14u;
+				pos += 2;
+			}
+			run = (length & 0x0F) + 4u;
+		}
+		fill(value, count);
+	};
+
+	while (dstPos < dstEnd && !failed) {
+		if (!nextBit()) {
+			// Copy one byte straight from the first stage's output
+			if (byteSrc >= dstCapacity || dstPos >= dstCapacity)
+				return false;
+			dst[dstPos++] = dst[byteSrc++];
+			continue;
+		}
+
+		if (byteSrc >= dstCapacity)
+			return false;
+		byte value = dst[byteSrc++];
+
+		if (longRunsFirst) {
+			if (!nextBit())
+				longRun(value);
+			else if (!nextBit())
+				fill(value, 2);
+			else if (!nextBit())
+				fill(value, 3);
+			else
+				fill(value, 4);
+		} else {
+			if (!nextBit())
+				fill(value, 2);
+			else if (!nextBit())
+				fill(value, 3);
+			else if (!nextBit())
+				fill(value, 4);
+			else
+				longRun(value);
+		}
+	}
+
+	return !failed;
+}
+
+/**
+ * Read a palette in the format used both by the container header and by "pl"
+ * chunks: runs of (start, count, RGB triples), terminated by 0xFF,0xFF.
+ * Components are 6 bits wide.
+ */
+static bool readPalette(const byte *data, uint32 size, uint32 &used, Graphics::Palette &palette) {
+	uint32 pos = 0;
+	for (;;) {
+		if (pos + 2 > size)
+			return false;
+		byte start = data[pos];
+		byte count = data[pos + 1];
+		pos += 2;
+		if (start == 0xFF && count == 0xFF)
+			break;
+		uint16 num = count ? count : 256;
+		if (start + num > 256 || pos + num * 3 > size)
+			return false;
+		for (uint16 i = 0; i < num; i++, pos += 3)
+			palette.set(start + i, data[pos] * 4, data[pos + 1] * 4, data[pos + 2] * 4);
+	}
+	used = pos;
+	return true;
+}
+
+/**
+ * Walk the chunk list of a frame record, reporting the image chunk (if any)
+ * and the extent of the sound data.
+ */
+static bool parseRecord(const byte *record, uint32 size, uint32 &imageChunk,
+                        uint32 &soundStart, uint32 &soundSize) {
+	imageChunk = 0;
+	soundStart = 0;
+	soundSize = 0;
+
+	uint32 pos = 2;
+	while (pos + 4 <= size) {
+		uint16 tag = READ_LE_UINT16(record + pos);
+		if (tag != kChunkSound && tag != kChunkPalette) {
+			imageChunk = pos;
+			return true;
+		}
+
+		uint32 length = READ_LE_UINT16(record + pos + 2);
+		if (length < 4 || pos + length > size)
+			return false;
+		if (tag == kChunkSound) {
+			soundStart = pos + 4;
+			soundSize = length - 4;
+		}
+		pos += length;
+	}
+
+	// A record without an image chunk is legal: it only carries sound
+	return true;
 }
 
 HNM1Decoder::HNM1Decoder() : _stream(nullptr), _videoTrack(nullptr) {
@@ -115,102 +360,136 @@ bool HNM1Decoder::loadStream(Common::SeekableReadStream *stream) {
 	_stream = stream;
 
 	uint32 streamSize = stream->size();
-	if (streamSize < 5) {
-		close();
+	if (streamSize < 8)
 		return false;
-	}
 
 	uint16 dataOffset = stream->readUint16LE();
-	if (dataOffset < 3 || dataOffset >= streamSize) {
-		close();
+	if (dataOffset < 8 || dataOffset >= streamSize)
+		return false;
+
+	// The palette, the marker byte and the frame offset table all have to fit
+	// exactly into the space before the frame records.
+	byte *header = new byte[dataOffset];
+	stream->seek(0, SEEK_SET);
+	if (stream->read(header, dataOffset) != dataOffset) {
+		delete[] header;
 		return false;
 	}
 
-	// Palette chunk: same start/count/RGB triples encoding as HNM4's PL
-	// chunk, terminated by start == 0xFF && count == 0xFF.
-	byte rawPalette[256 * 3] = {};
-	for (;;) {
-		if (stream->pos() + 2 > dataOffset) {
-			close();
-			return false;
-		}
-		byte start = stream->readByte();
-		byte count = stream->readByte();
-		if (start == 0xFF && count == 0xFF)
-			break;
-		uint16 c = count ? count : 256;
-		if (start + c > 256 || stream->pos() + c * 3 > dataOffset) {
-			close();
-			return false;
-		}
-		stream->read(rawPalette + start * 3, c * 3);
-	}
-
-	if (stream->readByte() != 0xFF) {
-		close();
+	Graphics::Palette palette(256);
+	uint32 used = 0;
+	if (!readPalette(header + 2, dataOffset - 2, used, palette)) {
+		delete[] header;
 		return false;
 	}
 
-	// Cumulative offset table: N+1 entries, the last of which equals the
-	// number of bytes remaining in the stream (i.e. it's an end marker
-	// rather than an (N+1)th frame).
+	uint32 pos = 2 + used;
+	if (pos >= dataOffset || header[pos++] != 0xFF) {
+		delete[] header;
+		return false;
+	}
+
 	Common::Array<uint32> frameOffsets;
 	uint32 remaining = streamSize - dataOffset;
 	for (;;) {
-		if (stream->pos() + 4 > dataOffset) {
-			close();
+		if (pos + 4 > dataOffset) {
+			delete[] header;
 			return false;
 		}
-		uint32 v = stream->readUint32LE();
-		frameOffsets.push_back(v);
-		if (v == remaining)
+		uint32 value = READ_LE_UINT32(header + pos);
+		pos += 4;
+		frameOffsets.push_back(value);
+		if (value == remaining)
 			break;
-		if (v > remaining || frameOffsets.size() > 4096) {
-			close();
+		if (value > remaining) {
+			delete[] header;
 			return false;
 		}
 	}
 
-	if ((uint32)stream->pos() != dataOffset) {
-		close();
+	byte rawPalette[256 * 3];
+	memcpy(rawPalette, palette.data(), sizeof(rawPalette));
+	delete[] header;
+
+	// Everything before the frame records must be accounted for, and there
+	// has to be at least one record (the table always ends with a marker).
+	if (pos != dataOffset || frameOffsets.size() < 2)
 		return false;
+
+	// Walk the records to pick up the sound, work out how tall the movie is,
+	// and make sure this really is a stream we can decode. Sound is stored as
+	// one VOC file sliced across the records.
+	Common::MemoryWriteStreamDynamic soundData(DisposeAfterUse::YES);
+	uint16 height = 0;
+	for (uint frame = 0; frame + 1 < frameOffsets.size(); frame++) {
+		uint32 start = dataOffset + frameOffsets[frame];
+		uint32 size = frameOffsets[frame + 1] - frameOffsets[frame];
+		if (size < 4)
+			return false;
+
+		byte *record = new byte[size];
+		stream->seek(start, SEEK_SET);
+		if (stream->read(record, size) != size) {
+			delete[] record;
+			return false;
+		}
+
+		uint32 imageChunk, soundStart, soundSize;
+		bool usable = parseRecord(record, size, imageChunk, soundStart, soundSize);
+
+		if (usable && imageChunk) {
+			if (imageChunk + 10 > size) {
+				usable = false;
+			} else {
+				byte checksum = 0;
+				for (int i = 0; i < 6; i++)
+					checksum += record[imageChunk + 4 + i];
+				uint16 heightMode = READ_LE_UINT16(record + imageChunk + 2);
+				uint16 chunkHeight = heightMode & 0xFF;
+				byte mode = heightMode >> 8;
+
+				// Mode 0xFE draws a complete picture into the visible area.
+				// Mode 0xFF renders into an off screen buffer instead, which
+				// isn't implemented, so give up on the whole movie rather than
+				// put those frames on screen as if they were complete
+				// pictures.
+				if (mode != 0xFE || (checksum != 0xAB && checksum != 0xAD) ||
+				        !chunkHeight || chunkHeight > kMaxHeight)
+					usable = false;
+				else
+					height = MAX(height, chunkHeight);
+			}
+		}
+
+		if (usable && soundSize)
+			soundData.write(record + soundStart, soundSize);
+
+		delete[] record;
+
+		if (!usable)
+			return false;
 	}
 
-	// At least one real frame is needed (frameOffsets always has the end
-	// marker, so an empty video has exactly one entry).
-	if (frameOffsets.size() < 2) {
-		close();
+	if (!height)
 		return false;
+
+	if (soundData.size() > 0) {
+		// soundData frees its own buffer, so the audio stream gets a copy it
+		// can own: the read stream takes it over, and makeVOCStream() takes
+		// over the read stream, including when it rejects the data.
+		byte *sound = (byte *)malloc(soundData.size());
+		if (!sound)
+			return false;
+		memcpy(sound, soundData.getData(), soundData.size());
+		Common::MemoryReadStream *voc = new Common::MemoryReadStream(sound,
+		        soundData.size(), DisposeAfterUse::YES);
+		Audio::SeekableAudioStream *audio = Audio::makeVOCStream(voc, Audio::FLAG_UNSIGNED,
+		                                    DisposeAfterUse::YES);
+		if (audio)
+			addTrack(new HNM1AudioTrack(audio, getSoundType()));
 	}
 
-	// This same container also wraps unrelated resources (VOC audio with
-	// lipsync data, playable through a completely different mechanism, not
-	// implemented here). Both share the exact same palette/table framing,
-	// so the only way to tell them apart cheaply is to check the first
-	// frame's sub-header, which is only meaningful (and internally
-	// consistent) for this video format: a fixed mode byte matching HNM4's
-	// own unused intraframe header, and an inner size that is always the
-	// outer size minus 6. Reject anything else here, at negligible cost,
-	// rather than accepting it and burning through however many frames
-	// (sometimes well over a thousand, e.g. GENERIQ.HNM) trying to decode
-	// non-video data as video.
-	uint32 firstFrameSize = frameOffsets[1] - frameOffsets[0];
-	byte frameHeader[11];
-	if (firstFrameSize < sizeof(frameHeader) ||
-	        stream->read(frameHeader, sizeof(frameHeader)) != sizeof(frameHeader)) {
-		close();
-		return false;
-	}
-	uint16 selfSize = READ_LE_UINT16(frameHeader);
-	byte mode = frameHeader[5];
-	byte reserved = frameHeader[8];
-	uint16 innerSize = READ_LE_UINT16(frameHeader + 9);
-	if (selfSize != firstFrameSize || mode != 0xFE || reserved != 0 || innerSize != selfSize - 6) {
-		close();
-		return false;
-	}
-
-	_videoTrack = new HNM1VideoTrack(stream, dataOffset, frameOffsets, rawPalette);
+	_videoTrack = new HNM1VideoTrack(stream, dataOffset, frameOffsets, rawPalette, height);
 	addTrack(_videoTrack);
 	return true;
 }
@@ -224,30 +503,92 @@ void HNM1Decoder::close() {
 }
 
 HNM1Decoder::HNM1VideoTrack::HNM1VideoTrack(Common::SeekableReadStream *stream, uint32 dataOffset,
-        const Common::Array<uint32> &frameOffsets, const byte *palette) :
+        const Common::Array<uint32> &frameOffsets, const byte *palette, uint16 height) :
 	_stream(stream), _dataOffset(dataOffset), _frameOffsets(frameOffsets), _curFrame(-1),
-	_palette(256), _dirtyPalette(true), _packedBuffer(nullptr), _packedBufferAlloc(0) {
+	_height(height), _palette(palette, 256), _dirtyPalette(true), _record(nullptr),
+	_recordAlloc(0) {
 
-	for (int i = 0; i < 256; i++) {
-		byte r = palette[i * 3 + 0];
-		byte g = palette[i * 3 + 1];
-		byte b = palette[i * 3 + 2];
-		_palette.set(i, r * 4, g * 4, b * 4);
-	}
-
-	_frameBuffer = new byte[kWidth * kHeight + kFrameBufferSlack];
-	const Graphics::PixelFormat &f = Graphics::PixelFormat::createFormatCLUT8();
-	_surface.init(kWidth, kHeight, kWidth * f.bytesPerPixel, nullptr, f);
+	_surface.create(kWidth, _height, Graphics::PixelFormat::createFormatCLUT8());
+	_decodeBuffer = new byte[(uint32)kWidth * kMaxHeight + 4 + kDecodeSlack]();
 }
 
 HNM1Decoder::HNM1VideoTrack::~HNM1VideoTrack() {
-	// Don't free _surface as we didn't use create(), just init()
-	delete[] _frameBuffer;
-	delete[] _packedBuffer;
+	_surface.free();
+	delete[] _record;
+	delete[] _decodeBuffer;
 }
 
-bool HNM1Decoder::HNM1VideoTrack::endOfTrack() const {
-	return _curFrame + 1 >= getFrameCount();
+void HNM1Decoder::HNM1VideoTrack::updatePalette(const byte *data, uint32 size) {
+	uint32 used = 0;
+	if (readPalette(data, size, used, _palette))
+		_dirtyPalette = true;
+}
+
+bool HNM1Decoder::HNM1VideoTrack::decodeImage(const byte *chunk, uint32 size) {
+	if (size < 10)
+		return false;
+
+	uint16 height = READ_LE_UINT16(chunk + 2) & 0xFF;
+	const byte *compHeader = chunk + 4;
+	const byte *payload = chunk + 10;
+	uint32 payloadSize = size - 10;
+
+	byte checksum = 0;
+	for (int i = 0; i < 6; i++)
+		checksum += compHeader[i];
+
+	uint32 uncompressed = READ_LE_UINT16(compHeader);
+	uint32 imageSize = (uint32)kWidth * height;
+	if (!height || height > _height || uncompressed < imageSize)
+		return false;
+
+	// The image can be preceded by a few bytes of padding, which the original
+	// leaves in place and draws from just past.
+	uint32 imageOffset = uncompressed - imageSize;
+	if (imageOffset > 4)
+		return false;
+
+	const uint32 capacity = (uint32)kWidth * kMaxHeight + 4 + kDecodeSlack;
+
+	if (checksum == 0xAB) {
+		if (!decodeHSQ(payload, payloadSize, _decodeBuffer, uncompressed, capacity))
+			return false;
+	} else if (checksum == 0xAD) {
+		uint32 stage1Size = READ_LE_UINT16(compHeader + 2);
+		byte compFlags = compHeader[4];
+
+		uint32 out = 0;
+		const byte *src = payload;
+		uint32 srcSize = payloadSize;
+		if (!(compFlags & 0x04)) {
+			// The first four bytes of the image are stored plainly
+			if (payloadSize < 4)
+				return false;
+			memcpy(_decodeBuffer, payload, 4);
+			out = 4;
+			src += 4;
+			srcSize -= 4;
+		}
+
+		uint32 end = out + uncompressed;
+		if (stage1Size > uncompressed || end > capacity)
+			return false;
+
+		uint32 srcUsed = 0;
+		uint32 scratch = end - stage1Size;
+		if (!decodeLZ(src, srcSize, srcUsed, _decodeBuffer, scratch, end, capacity,
+		              (compFlags & 0x40) ? 0x80 : 0x00))
+			return false;
+		if (!decodeRLE(src + srcUsed, srcSize - srcUsed, _decodeBuffer, capacity, scratch,
+		               out, end, (compFlags & 0x80) != 0))
+			return false;
+	} else {
+		return false;
+	}
+
+	// Rows past this chunk's height keep whatever the last frame put there
+	memcpy(_surface.getPixels(), _decodeBuffer + imageOffset, imageSize);
+	return true;
 }
 
 const Graphics::Surface *HNM1Decoder::HNM1VideoTrack::decodeNextFrame() {
@@ -257,32 +598,52 @@ const Graphics::Surface *HNM1Decoder::HNM1VideoTrack::decodeNextFrame() {
 	_curFrame++;
 
 	uint32 start = _dataOffset + _frameOffsets[_curFrame];
-	uint32 end = _dataOffset + _frameOffsets[_curFrame + 1];
-	if (end <= start + kFrameSubHeaderSize) {
+	uint32 size = _frameOffsets[_curFrame + 1] - _frameOffsets[_curFrame];
+	if (size < 4)
 		return &_surface;
-	}
-	uint32 frameSize = end - start;
 
-	if (_packedBufferAlloc < frameSize) {
-		delete[] _packedBuffer;
-		_packedBuffer = new byte[frameSize];
-		_packedBufferAlloc = frameSize;
+	if (_recordAlloc < size) {
+		delete[] _record;
+		_record = new byte[size];
+		_recordAlloc = size;
 	}
 	_stream->seek(start, SEEK_SET);
-	if (_stream->read(_packedBuffer, frameSize) != frameSize) {
+	if (_stream->read(_record, size) != size)
 		return &_surface;
+
+	// Palette updates have to be applied before the image is decoded
+	uint32 pos = 2;
+	while (pos + 4 <= size) {
+		uint16 tag = READ_LE_UINT16(_record + pos);
+		if (tag != kChunkSound && tag != kChunkPalette)
+			break;
+		uint32 length = READ_LE_UINT16(_record + pos + 2);
+		if (length < 4 || pos + length > size)
+			return &_surface;
+		if (tag == kChunkPalette)
+			updatePalette(_record + pos + 4, length - 4);
+		pos += length;
 	}
 
-	// The first 12 bytes are a per-frame sub-header mirroring (and just as
-	// unused as) HNM4's own width/height/mode intraframe header. Not every
-	// resource using this container is actually this video format (some
-	// wrap unrelated data, such as VOC audio); rather than trying to tell
-	// those apart and rejecting them, just decode whatever comes out.
-	decodeHSQFrame(_packedBuffer + kFrameSubHeaderSize, frameSize - kFrameSubHeaderSize,
-	                _frameBuffer, kWidth * kHeight + kFrameBufferSlack);
+	if (pos + 10 <= size && !decodeImage(_record + pos, size - pos)) {
+		// Not everything in this format is understood; leaving the previous
+		// image alone looks better than showing garbage.
+		debug(5, "HNM1: Could not decode frame %d", _curFrame);
+	}
 
-	_surface.setPixels(_frameBuffer);
 	return &_surface;
+}
+
+HNM1Decoder::HNM1AudioTrack::HNM1AudioTrack(Audio::SeekableAudioStream *stream,
+        Audio::Mixer::SoundType soundType) : AudioTrack(soundType), _stream(stream) {
+}
+
+HNM1Decoder::HNM1AudioTrack::~HNM1AudioTrack() {
+	delete _stream;
+}
+
+Audio::AudioStream *HNM1Decoder::HNM1AudioTrack::getAudioStream() const {
+	return _stream;
 }
 
 } // End of namespace Cryo
