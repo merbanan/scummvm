@@ -205,15 +205,9 @@ int EdenGame::loadSound(uint16 num) {
 	int32 size = file->_size;
 	int32 offs = file->_offs;
 	debug("* Loading sound %d (%s) at 0x%X, %d bytes", num, file->_name.c_str(), (uint)offs, size);
-	if (_soundAllocated) {
-		free(_voiceSamplesBuffer);
-		_voiceSamplesBuffer = nullptr;
-		_soundAllocated = false; //TODO: bug??? no alloc
-	}
-	else {
-		_voiceSamplesBuffer = (byte *)malloc(size);
-		_soundAllocated = true;
-	}
+	free(_voiceSamplesBuffer);
+	_voiceSamplesBuffer = (byte *)malloc(size);
+	_soundAllocated = true;
 
 	_bigfile.seek(offs, SEEK_SET);
 	//For PC loaded data is a VOC file, on Mac version this is a raw samples
