@@ -1957,8 +1957,14 @@ void EdenGame::loadCharacter(perso_t *perso) {
 		return;
 
 	if (perso->_spriteBank != _globals->_characterImageBank) {
-		_graphics->setCurCharRect(&_characterRects[perso->_id]); //TODO: array of int16?
-		dword_30728 = _characterArray[perso->_id];
+		int16 rectIdx = perso->_id;
+		if (rectIdx >= 19)
+			rectIdx = 18;
+		_graphics->setCurCharRect(&_characterRects[rectIdx]);
+		int16 arrIdx = perso->_id;
+		if (arrIdx >= 20)
+			arrIdx = 19;
+		dword_30728 = _characterArray[arrIdx];
 		ef_perso();
 		_globals->_characterImageBank = perso->_spriteBank;
 		useBank(_globals->_characterImageBank);
