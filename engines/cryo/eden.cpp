@@ -7054,7 +7054,8 @@ uint8 EdenGame::getByteVar(uint16 offset) {
 		VAR(0x6E, _labyrinthDirections);
 		VAR(0x6F, _labyrinthRoom);
 	default:
-		error("Undefined byte variable access (0x%X)", offset);
+		warning("Undefined byte variable access (0x%X)", offset);
+		break;
 	}
 	return 0;
 }
@@ -7093,7 +7094,8 @@ uint16 EdenGame::getWordVar(uint16 offset) {
 		VAR(0x3E, _morkusSpyVideoNum3); //TODO: pad?
 		VAR(0x40, _morkusSpyVideoNum4); //TODO: pad?
 	default:
-		error("Undefined word variable access (0x%X)", offset);
+		warning("Undefined word variable access (0x%X)", offset);
+		break;
 	}
 	return 0;
 }
