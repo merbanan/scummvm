@@ -4912,7 +4912,6 @@ object_t *EdenGame::getObjectPtr(int16 id) {
 
 void EdenGame::countObjects() {
 	int16 index = 0;
-	byte total = 0;
 	for (int i = 0; i < MAX_OBJECTS; i++) {
 		int16 count = _objects[i]._count;
 		if (count == 0)
@@ -4921,13 +4920,10 @@ void EdenGame::countObjects() {
 		if (_objects[i]._flags & ObjectFlags::ofInHands)
 			count--;
 
-		if (count) {
-			total += count;
-			while (count--)
-				_ownObjects[index++] = _objects[i]._id;
-		}
+		while (count-- > 0 && index < ARRAYSIZE(_ownObjects))
+			_ownObjects[index++] = _objects[i]._id;
 	}
-	_globals->_objCount = total;
+	_globals->_objCount = (byte)index;
 }
 
 void EdenGame::showObjects() {
