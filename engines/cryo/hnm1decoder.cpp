@@ -384,10 +384,15 @@ bool HNM1Decoder::loadStream(Common::SeekableReadStream *stream) {
 	}
 
 	uint32 pos = 2 + used;
-	if (pos >= dataOffset || header[pos++] != 0xFF) {
+	if (pos >= dataOffset) {
 		delete[] header;
 		return false;
 	}
+	// A spare 0xFF sits between the palette and the frame offsets in some
+	// movies and not in others; the demo disc has both kinds. Where it is
+	// missing the offsets start right after the palette's own terminator.
+	if (header[pos] == 0xFF)
+		pos++;
 
 	Common::Array<uint32> frameOffsets;
 	uint32 remaining = streamSize - dataOffset;
