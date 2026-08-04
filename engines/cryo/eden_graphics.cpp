@@ -1255,6 +1255,7 @@ void EdenGraphics::showMovie(int16 num, char arg1) {
 	}
 
 	do {
+		bool newFrame = false;
 		if (decoder->needsUpdate()) {
 			const Graphics::Surface *frame = decoder->decodeNextFrame();
 			if (frame) {
@@ -1269,6 +1270,7 @@ void EdenGraphics::showMovie(int16 num, char arg1) {
 				}
 				CLBlitter_Send2ScreenNextCopy(palette16, 0, 256);
 			}
+			newFrame = true;
 		}
 		_hnmFrameNum = decoder->getCurFrame();
 
@@ -1277,22 +1279,30 @@ void EdenGraphics::showMovie(int16 num, char arg1) {
 		else
 			_game->musicspy();
 
-		CLBlitter_CopyView2Screen(_hnmView);
+		// Only send a frame to the screen when there is a new one: the scaling
+		// blit and the screen update together take long enough that doing them
+		// on every iteration pushes the next frame well past its due time,
+		// which both slows playback down and starves the movie's sound
+		if (newFrame)
+			CLBlitter_CopyView2Screen(_hnmView);
 		assert(_game->_vm->_screenView->_pitch == 320);
-		_game->_vm->pollEvents();
 
-		if (arg1) {
-			if (_game->_vm->isMouseButtonDown()) {
-				if (!_game->isMouseHeld()) {
-					_game->setMouseHeld();
-					_videoCanceledFlag = true;
-				}
+		// Pump events once per iteration, waiting no longer than the time left
+		// until the next frame is due. Waiting past that point presents the frame
+		// late, which starves the sound the movie carries and drags playback out;
+		// polling twice per iteration doubled that wait.
+		bool mouseDown = _game->_vm->isMouseButtonDown(CLIP<uint32>(decoder->getTimeToNextFrame(), 1, 10));
+
+		// Cancelling used to be tied to the letterbox flag, which left the two
+		// logo movies at the very start of the game impossible to click through
+		if (mouseDown) {
+			if (!_game->isMouseHeld()) {
+				_game->setMouseHeld();
+				_videoCanceledFlag = true;
 			}
-			else
-				_game->setMouseNotHeld();
 		}
-
-		g_system->delayMillis(10);
+		else
+			_game->setMouseNotHeld();
 	} while (!_game->_vm->shouldQuit() && !decoder->endOfVideo() && !_videoCanceledFlag);
 
 	delete _hnmView;
