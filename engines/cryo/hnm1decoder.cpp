@@ -175,6 +175,157 @@ static bool decodeLZ(const byte *src, uint32 srcSize, uint32 &srcUsed, byte *dst
 }
 
 /**
+ * The 0xAC scheme (FUN_1000_e850 and the loop at LAB_1000_e79b in the demo's
+ * DEMO.EXE). Two stages again, but where the 0xAD scheme keeps everything the
+ * second stage needs in one bit stream, this one spreads the work over five,
+ * whose offsets sit in a longer chunk header. They are all counted from two
+ * bytes before the chunk:
+ *
+ *   +10, +12  run lengths, a nibble each
+ *   +14       the bit stream driving the second stage
+ *   +16, +18  the control bytes and the extra bits the first stage reads
+ *   +20       how much the first stage leaves for the second
+ *
+ * The picture can come out a handful of pixels short of its last row, which is
+ * how the original behaves too: both stop as soon as the first stage's output
+ * has been read through, wherever in the row that leaves them.
+ */
+static bool decodeAC(const byte *chunk, uint32 size, byte *dst, uint32 dstSize,
+                     uint32 dstCapacity) {
+	if (size < 22 || dstSize > dstCapacity) {
+		return false;
+	}
+
+	uint32 lengthsA = READ_LE_UINT16(chunk + 10);
+	uint32 lengthsB = READ_LE_UINT16(chunk + 12);
+	uint32 bits     = READ_LE_UINT16(chunk + 14);
+	uint32 control  = READ_LE_UINT16(chunk + 16);
+	uint32 extras   = READ_LE_UINT16(chunk + 18);
+	uint32 stage1Size = READ_LE_UINT16(chunk + 20);
+
+	if (lengthsA < 2 || lengthsB < 2 || bits < 2 || control < 2 || extras < 2 ||
+	        !stage1Size || stage1Size > dstSize) {
+		return false;
+	}
+	lengthsA -= 2;
+	lengthsB -= 2;
+	bits -= 2;
+	control -= 2;
+	extras -= 2;
+
+	// First stage: an LZ77 pass into the tail of the buffer. Same shape as the
+	// 0xAD one, except that the control byte is complemented before the distance
+	// is taken out of it, and literals are stored as they come.
+	uint32 out = dstSize - stage1Size;
+	byte pair = 0;
+	bool second = false;
+	while (out < dstSize) {
+		if (control >= size) {
+			return false;
+		}
+		byte code = chunk[control++];
+		if (code < 0x80) {
+			dst[out++] = code;
+			continue;
+		}
+
+		byte inverted = ~code;
+		uint32 distance, length;
+		if (!second) {
+			if (extras >= size) {
+				return false;
+			}
+			pair = chunk[extras++];
+			distance = (byte)((byte)(inverted << 1) + 1 + ((pair >> 4) & 1));
+			length = (pair >> 5) + 2u;
+			second = true;
+		} else {
+			byte low = pair & 0x0F;
+			distance = (byte)((byte)(inverted << 1) + 1 + (low & 1));
+			length = (low >> 1) + 2u;
+			second = false;
+		}
+
+		if (!distance || distance > out) {
+			return false;
+		}
+		uint32 from = out - distance;
+		for (; length > 0 && out < dstSize; length--) {
+			dst[out++] = dst[from++];
+		}
+	}
+
+	// Second stage: expand that into the picture. A zero bit copies a byte
+	// across, the rest are runs of one, whose length comes from a nibble of one
+	// of the two length streams.
+	uint32 src = dstSize - stage1Size;
+	uint32 pos = 0;
+	uint16 queue = 0;
+	bool highNibble = true;
+	bool failed = false;
+
+	// The same queue as the 0xAD scheme uses: most significant bit first, with a
+	// set sentinel appended so that running out reads back as zero.
+	auto nextBit = [&]() -> int {
+		int bit = (queue >> 15) & 1;
+		queue = (uint16)(queue << 1);
+		if (!queue) {
+			if (bits + 2 > size) {
+				failed = true;
+				return 0;
+			}
+			uint16 word = READ_LE_UINT16(chunk + bits);
+			bits += 2;
+			queue = (uint16)((word << 1) | 1);
+			return (word >> 15) & 1;
+		}
+		return bit;
+	};
+
+	while (src < dstSize && !failed) {
+		if (!nextBit()) {
+			if (pos >= dstCapacity) {
+				return false;
+			}
+			dst[pos++] = dst[src++];
+			continue;
+		}
+
+		uint32 length;
+		if (!nextBit()) {
+			// A nibble of the first length stream, taken high half first. The
+			// low half belongs to the byte already stepped over.
+			if (highNibble) {
+				if (lengthsA >= size) {
+					return false;
+				}
+				length = (chunk[lengthsA++] >> 4) + 2u;
+			} else {
+				length = (chunk[lengthsA - 1] & 0x0F) + 2u;
+			}
+			highNibble = !highNibble;
+		} else if (!nextBit()) {
+			length = 2;
+		} else {
+			if (lengthsB >= size) {
+				return false;
+			}
+			length = chunk[lengthsB++] + 0x12u;
+		}
+
+		byte value = dst[src++];
+		for (; length > 0; length--) {
+			if (pos >= dstCapacity) {
+				return false;
+			}
+			dst[pos++] = value;
+		}
+	}
+
+	return !failed;
+}
+
+/**
  * Second stage of the 0xAD scheme (LAB_1000_39f3 and LAB_1000_3aaf): a run
  * length pass driven by a bit stream which directly follows the first stage's
  * data, while the bytes it works on come from the first stage's output.
@@ -458,7 +609,8 @@ bool HNM1Decoder::loadStream(Common::SeekableReadStream *stream) {
 				// isn't implemented, so give up on the whole movie rather than
 				// put those frames on screen as if they were complete
 				// pictures.
-				if (mode != 0xFE || (checksum != 0xAB && checksum != 0xAD) ||
+				if (mode != 0xFE ||
+				        (checksum != 0xAB && checksum != 0xAC && checksum != 0xAD) ||
 				        !chunkHeight || chunkHeight > kMaxHeight)
 					usable = false;
 				else
@@ -557,6 +709,10 @@ bool HNM1Decoder::HNM1VideoTrack::decodeImage(const byte *chunk, uint32 size) {
 
 	if (checksum == 0xAB) {
 		if (!decodeHSQ(payload, payloadSize, _decodeBuffer, uncompressed, capacity))
+			return false;
+	} else if (checksum == 0xAC) {
+		// This one reads streams from all over the chunk, so it gets the lot
+		if (!decodeAC(chunk, size, _decodeBuffer, uncompressed, capacity))
 			return false;
 	} else if (checksum == 0xAD) {
 		uint32 stage1Size = READ_LE_UINT16(compHeader + 2);
