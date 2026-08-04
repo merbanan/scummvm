@@ -23,6 +23,8 @@
 
 #include "engines/advancedDetector.h"
 
+#include "cryo/detection.h"
+
 
 static const PlainGameDescriptor cryoGames[] = {
 	{"losteden", "Lost Eden"},
@@ -34,14 +36,16 @@ namespace Cryo {
 static const ADGameDescription gameDescriptions[] = {
 
 	// Lost Eden PC non-interactive demo version
-	// Probably not worth it
+	// Carries no game data at all, just movies loose on the disc: DEMO.EXE
+	// plays a reel of them and HNM.BAT hands the same files to an external
+	// viewer, so that reel is all there is to run.
 	{
 		"losteden",
 		"Non-Interactive Demo",
 		AD_ENTRY1s("EDEN6.HSQ", "00b43c44cf2ac50b1a45dfad5fa5360d", 17093),
 		Common::EN_ANY,
 		Common::kPlatformDOS,
-		ADGF_DEMO | ADGF_UNSTABLE,
+		ADGF_DEMO | ADGF_UNSTABLE | GF_MOVIE_REEL,
 		GUIO1(GUIO_NOMIDI)
 	},
 

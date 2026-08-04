@@ -4142,6 +4142,29 @@ void EdenGame::debugPlayVideo(int16 num) {
 	_graphics->playHNM(num);
 }
 
+// The movies a release without game data has to show, in the order its own
+// player walked through them. DEMO.EXE plays a subset of these, and HNM.BAT
+// hands the whole set to an external viewer one at a time; the two together
+// come to this list. DINOLA1, which DEMO.EXE also names, is not on the disc.
+static const char *const kMovieReel[] = {
+	"ANCIBUR2.HNM", "CEMETER2.HNM", "CRYO.HNM",     "CRYO2.HNM",
+	"DINOINT1.HNM", "DINOINT2.HNM", "DINOINT3.HNM", "DINOINT4.HNM",
+	"FORETVOL.HNM", "GEOL2.HNM",    "GRANPRAI.HNM", "MARAIVOL.HNM",
+	"PAYSAGE.HNM",  "PTEROCI2.HNM", "PTEROCIT.HNM", "ROI.HNM",
+	"SOHTIL1.HNM",  "SROI2.HNM",    "TYRACHAS.HNM", "VIL2INT5.HNM",
+	"VILOPTER.HNM", "VIRGIN.HNM"
+};
+
+void EdenGame::playMovieReel() {
+	for (int i = 0; i < ARRAYSIZE(kMovieReel) && !_vm->shouldQuit(); i++) {
+		if (!_graphics->playMovieFile(kMovieReel[i])) {
+			// Most of these movies are packed with a scheme the decoder does
+			// not handle yet, so skipping is the normal case for now
+			debug("Skipped %s", kMovieReel[i]);
+		}
+	}
+}
+
 void EdenGame::run() {
 	_invIconsCount = (_vm->getPlatform() == Common::kPlatformMacintosh) ? 9 : 11;
 	_roomIconsBase = _invIconsBase + _invIconsCount;
@@ -4155,11 +4178,19 @@ void EdenGame::run() {
 	_graphics->setSavedUnderSubtitles(false);
 
 	allocateBuffers();
-	openbigfile();
-	_graphics->openWindow();
-	loadpermfiles();
 
-	if (!_bufferAllocationErrorFl) {
+	// A release which is only a reel of movies has no resource file to open and
+	// no game to set up: play the reel and be done
+	bool movieReel = _vm->isMovieReel();
+	if (!movieReel)
+		openbigfile();
+	_graphics->openWindow();
+	if (!movieReel)
+		loadpermfiles();
+
+	if (movieReel) {
+		playMovieReel();
+	} else if (!_bufferAllocationErrorFl) {
 		LostEdenMac_InitPrefs();
 		if (_vm->getPlatform() == Common::kPlatformMacintosh)
 			initCubeMac();
