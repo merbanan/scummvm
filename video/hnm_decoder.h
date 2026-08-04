@@ -27,6 +27,7 @@
 #define VIDEO_HNM_DECODER_H
 
 #include "audio/audiostream.h"
+#include "common/queue.h"
 #include "common/rational.h"
 #include "graphics/palette.h"
 #include "graphics/surface.h"
@@ -184,6 +185,14 @@ private:
 		HNMAudioTrack(Audio::Mixer::SoundType soundType) : AudioTrack(soundType) {}
 
 		virtual uint32 decodeSound(uint16 chunkType, byte *data, uint32 size) = 0;
+
+		/**
+		 * Fill in for a frame which carries no sound, so that a movie whose
+		 * sound doesn't run from end to end keeps one timeline for both.
+		 *
+		 * @return how many samples were queued, zero if the track can't.
+		 */
+		virtual uint32 queueSilence(uint32 numSamples) { return 0; }
 	};
 
 	class DPCMAudioTrack : public HNMAudioTrack {
@@ -205,6 +214,26 @@ private:
 		bool _stereo;
 	};
 
+	/**
+	 * Raw samples, as found in the sound chunks of the Macintosh release of
+	 * Lost Eden instead of the DPCM the DOS release uses.
+	 */
+	class PCMAudioTrack : public HNMAudioTrack {
+	public:
+		PCMAudioTrack(uint sampleRate, bool is16bits, Audio::Mixer::SoundType soundType);
+		~PCMAudioTrack() override;
+
+		uint32 decodeSound(uint16 chunkType, byte *data, uint32 size) override;
+		uint32 queueSilence(uint32 numSamples) override;
+	protected:
+		Audio::AudioStream *getAudioStream() const override { return _audioStream; }
+	private:
+		Audio::QueuingAudioStream *_audioStream;
+		byte _bufferFlags;
+		byte _silenceValue;
+		uint _bytesPerSample;
+	};
+
 	class APCAudioTrack : public HNMAudioTrack {
 	public:
 		APCAudioTrack(uint sampleRate, byte stereo,
@@ -218,6 +247,35 @@ private:
 		Audio::APCStream *_audioStream;
 	};
 
+	/** How many frames to demux ahead of the one being shown. */
+	static const uint kDemuxReadAhead = 8;
+
+	static bool isSoundChunk(uint16 chunkType) {
+		return chunkType == MKTAG16('S', 'D') ||
+		       chunkType == MKTAG16('A', 'A') ||
+		       chunkType == MKTAG16('B', 'B');
+	}
+
+	/**
+	 * A frame read from the container: its chunks as they were stored, plus how
+	 * many sound samples it lasts for. Its sound has already been passed on to
+	 * the audio track; its picture is decoded when the frame is due.
+	 */
+	struct DemuxedFrame {
+		byte *_data;
+		uint32 _size;
+		uint32 _audioNumSamples;
+	};
+
+	/** Read one frame from the container. False once there is none left. */
+	bool demuxFrame();
+
+	/** Set once the container has run out, so it is not read past its end. */
+	bool _endOfStream;
+
+	/** How many sound samples a frame lasts for when it carries none. */
+	uint32 _audioSamplesPerFrame;
+
 	Graphics::PixelFormat _format;
 	bool _loop;
 	byte *_initialPalette;
@@ -229,8 +287,7 @@ private:
 
 	Common::SeekableReadStream *_stream;
 	bool _alignedChunks;
-	byte *_dataBuffer;
-	uint32 _dataBufferAlloc;
+	Common::Queue<DemuxedFrame> _demuxedFrames;
 };
 
 } // End of namespace Video

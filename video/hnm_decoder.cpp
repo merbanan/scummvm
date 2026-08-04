@@ -36,11 +36,72 @@
 
 namespace Video {
 
+// Sound variants, as found in the second byte of an HNM4 header
+enum {
+	kSoundVariantDPCM = 1,	// The usual one: a delta lookup table then indices into it
+	kSoundVariantPCM  = 3	// Raw samples, used by the Macintosh release of Lost Eden
+};
+
+// Flags of a raw sound chunk. These carry the sample size, which is nowhere to
+// be found in the file header: Lost Eden ships the very same movies in an 8 bit
+// (CRYO8.HNM, INTRO8.HNM) and a 16 bit (CRYO16.HNM, INTRO16.HNM) flavour whose
+// headers are byte for byte identical.
+enum {
+	kPCMFlags8Bits  = 0x7A00,	// 882 bytes, i.e. 80ms, per frame: 11025Hz
+	kPCMFlags16Bits = 0xD000	// 3528 bytes, i.e. 80ms, per frame: 22050Hz
+};
+
+/**
+ * Look for the flags of the first sound chunk without disturbing @p stream.
+ * Only chunk headers are read, so this stays cheap even on long movies. Sound
+ * doesn't have to start with the first frame, hence the generous bound.
+ */
+static bool peekSoundChunkFlags(Common::SeekableReadStream *stream, uint16 &soundFlags) {
+	const uint kMaxFramesScanned = 1024;
+	int64 startPos = stream->pos();
+	bool found = false;
+
+	for (uint frame = 0; frame < kMaxFramesScanned && !found; frame++) {
+		uint32 superchunkRemaining = stream->readUint32LE();
+		if (stream->eos() || !superchunkRemaining) {
+			break;
+		}
+		superchunkRemaining = (superchunkRemaining & 0x00ffffff);
+		if (superchunkRemaining < 4) {
+			break;
+		}
+		superchunkRemaining -= 4;
+
+		while (superchunkRemaining >= 8) {
+			uint32 chunkSize = stream->readUint32LE();
+			uint16 chunkType = stream->readUint16BE();
+			uint16 chunkFlags = stream->readUint16LE();
+			if (stream->eos() || chunkSize < 8 || chunkSize > superchunkRemaining) {
+				// Bogus data: give up rather than resynchronize on garbage
+				superchunkRemaining = 0;
+				frame = kMaxFramesScanned;
+				break;
+			}
+			if (chunkType == MKTAG16('S', 'D')) {
+				soundFlags = chunkFlags;
+				found = true;
+				break;
+			}
+			stream->skip(chunkSize - 8);
+			superchunkRemaining -= chunkSize;
+		}
+	}
+
+	stream->clearErr();
+	stream->seek(startPos, SEEK_SET);
+	return found;
+}
+
 HNMDecoder::HNMDecoder(const Graphics::PixelFormat &format, bool loop,
                        byte *initialPalette) : _regularFrameDelayMs(uint32(-1)),
 	_videoTrack(nullptr), _audioTrack(nullptr), _stream(nullptr), _format(format),
 	_loop(loop), _initialPalette(initialPalette), _alignedChunks(false),
-	_dataBuffer(nullptr), _dataBufferAlloc(0) {
+	_audioSamplesPerFrame(0), _endOfStream(false) {
 	if (initialPalette && format.bytesPerPixel >= 2) {
 		error("Invalid pixel format while initial palette is set");
 	}
@@ -71,6 +132,7 @@ bool HNMDecoder::loadStream(Common::SeekableReadStream *stream) {
 	}
 
 	byte audioflags = 0;
+	byte soundVariant = kSoundVariantDPCM;
 	uint16 soundBits = 0, soundFormat = 0;
 	if (tag == MKTAG('H', 'N', 'M', '6')) {
 		//uint16 ukn6_1 = stream->readUint16LE();
@@ -79,8 +141,11 @@ bool HNMDecoder::loadStream(Common::SeekableReadStream *stream) {
 		//byte bpp = stream->readByte();
 		stream->skip(1);
 	} else {
-		//uint32 ukn = stream->readUint32BE();
-		stream->skip(4);
+		//byte ukn = stream->readByte();
+		stream->skip(1);
+		soundVariant = stream->readByte();
+		//uint16 ukn2 = stream->readUint16LE();
+		stream->skip(2);
 	}
 	uint16 width = stream->readUint16LE();
 	uint16 height = stream->readUint16LE();
@@ -133,9 +198,27 @@ bool HNMDecoder::loadStream(Common::SeekableReadStream *stream) {
 			return false;
 		}
 		if (soundFormat == 2 && soundBits != 0) {
-			// HNM4 is Mono 22050Hz
-			_audioTrack = new DPCMAudioTrack(soundFormat, soundBits, 22050, false, getSoundType());
-			audioSampleRate = 22050;
+			if (soundVariant == kSoundVariantPCM) {
+				// Raw samples, whose size only the sound chunks themselves tell.
+				// A movie whose header claims sound but carries none is left
+				// silent, paced by the regular frame delay.
+				uint16 soundChunkFlags = 0;
+				if (peekSoundChunkFlags(stream, soundChunkFlags)) {
+					bool is16bits = true;
+					if (soundChunkFlags == kPCMFlags8Bits) {
+						is16bits = false;
+					} else if (soundChunkFlags != kPCMFlags16Bits) {
+						warning("Unknown HNM4 raw sound chunk flags 0x%04X, assuming 16 bits",
+						        soundChunkFlags);
+					}
+					audioSampleRate = is16bits ? 22050 : 11025;
+					_audioTrack = new PCMAudioTrack(audioSampleRate, is16bits, getSoundType());
+				}
+			} else {
+				// HNM4 is Mono 22050Hz
+				_audioTrack = new DPCMAudioTrack(soundFormat, soundBits, 22050, false, getSoundType());
+				audioSampleRate = 22050;
+			}
 		}
 		_videoTrack = new HNM4VideoTrack(width, height, frameSize, frameCount,
 		                                 _regularFrameDelayMs, audioSampleRate,
@@ -174,6 +257,10 @@ bool HNMDecoder::loadStream(Common::SeekableReadStream *stream) {
 		close();
 		return false;
 	}
+	// A frame which carries no sound still takes up its share of the sound
+	// timeline; this is how much of it
+	_audioSamplesPerFrame = audioSampleRate * _regularFrameDelayMs / 1000;
+
 	addTrack(_videoTrack);
 	if (_audioTrack) {
 		addTrack(_audioTrack);
@@ -191,24 +278,32 @@ void HNMDecoder::close() {
 	delete _stream;
 	_stream = nullptr;
 
-	delete[] _dataBuffer;
-	_dataBuffer = nullptr;
-	_dataBufferAlloc = 0;
+	while (!_demuxedFrames.empty()) {
+		delete[] _demuxedFrames.pop()._data;
+	}
+	_endOfStream = false;
 }
 
-void HNMDecoder::readNextPacket() {
-	// We are called to feed a frame
-	// Each chunk is packetized and a packet seems to contain only one frame
+bool HNMDecoder::demuxFrame() {
+	// Reading past the end would hand us whatever readUint32LE() leaves behind
+	// when it comes up short, which then looks like a huge superchunk
+	if (_endOfStream) {
+		return false;
+	}
+
+	// Each superchunk holds one frame: its sound, and the chunks its picture is
+	// built from
 	uint32 superchunkRemaining = _stream->readUint32LE();
-	if (!superchunkRemaining) {
+	if (_stream->eos() || !superchunkRemaining) {
 		if (!_loop) {
-			error("End of file but still requesting data");
-		} else {
-			// Looping: read back from start of file, skip header and read a new super chunk header
-			_videoTrack->restart();
-			_stream->seek(64, SEEK_SET);
-			superchunkRemaining = _stream->readUint32LE();
+			// Nothing left in the file
+			_endOfStream = true;
+			return false;
 		}
+		// Looping: read back from start of file, skip header and read a new super chunk header
+		_videoTrack->restart();
+		_stream->seek(64, SEEK_SET);
+		superchunkRemaining = _stream->readUint32LE();
 	}
 	superchunkRemaining = superchunkRemaining & 0x00ffffff;
 	if (superchunkRemaining < 4) {
@@ -216,55 +311,117 @@ void HNMDecoder::readNextPacket() {
 	}
 	superchunkRemaining -= 4;
 
-	if (_dataBufferAlloc < superchunkRemaining) {
-		delete[] _dataBuffer;
-		_dataBuffer = new byte[superchunkRemaining];
-		_dataBufferAlloc = superchunkRemaining;
-	}
-	if (_stream->read(_dataBuffer, superchunkRemaining) != superchunkRemaining) {
+	DemuxedFrame frame;
+	frame._size = superchunkRemaining;
+	frame._data = new byte[superchunkRemaining];
+	// We use -1 here to discrimate a possibly empty sound frame
+	frame._audioNumSamples = uint32(-1);
+	if (_stream->read(frame._data, superchunkRemaining) != superchunkRemaining) {
+		delete[] frame._data;
 		error("Not enough data in file");
 	}
 
-	// We use -1 here to discrimate a possibly empty sound frame
-	uint32 audioNumSamples = uint32(-1);
-
-	byte *data_p = _dataBuffer;
+	// Hand the sound over straight away: the mixer needs it buffered well
+	// before the frame carrying it is due on screen. The picture waits its turn.
+	byte *data_p = frame._data;
 	while (superchunkRemaining > 0) {
 		if (superchunkRemaining < 8) {
+			delete[] frame._data;
 			error("Not enough data in superchunk");
 		}
 
 		uint32 chunkSize = READ_LE_UINT32(data_p);
-		data_p += sizeof(uint32);
-		uint16 chunkType = READ_BE_UINT16(data_p);
-		data_p += sizeof(uint16);
-		uint16 flags     = READ_LE_UINT16(data_p);
-		data_p += sizeof(uint16);
+		uint16 chunkType = READ_BE_UINT16(data_p + sizeof(uint32));
 
 		if (superchunkRemaining < chunkSize) {
+			delete[] frame._data;
 			error("Chunk has a bogus size");
 		}
 
-		if (chunkType == MKTAG16('S', 'D') ||
-		    chunkType == MKTAG16('A', 'A') ||
-		    chunkType == MKTAG16('B', 'B')) {
+		if (isSoundChunk(chunkType)) {
 			if (_audioTrack) {
-				audioNumSamples = _audioTrack->decodeSound(chunkType, data_p, chunkSize - 8);
+				// A frame can carry more than one sound chunk: the first one of
+				// a movie primes the double buffer with a few frames worth of
+				// samples. They all have to count towards its duration.
+				uint32 numSamples = _audioTrack->decodeSound(chunkType,
+				                    data_p + 8, chunkSize - 8);
+				if (frame._audioNumSamples == uint32(-1)) {
+					frame._audioNumSamples = numSamples;
+				} else {
+					frame._audioNumSamples += numSamples;
+				}
 			} else {
 				warning("Got audio data without an audio track");
 			}
-		} else {
-			_videoTrack->decodeChunk(data_p, chunkSize - 8, chunkType, flags);
 		}
 
 		if (_alignedChunks) {
 			chunkSize = ((chunkSize + 3) / 4) * 4;
 		}
 
-		data_p += (chunkSize - 8);
+		data_p += chunkSize;
 		superchunkRemaining -= chunkSize;
 	}
-	_videoTrack->newFrame(audioNumSamples);
+
+	// Movies exist whose sound only starts a few frames in, or stops before the
+	// last frame. Standing in for the missing chunks keeps the sound timeline,
+	// which is what the frames are timed against, the same length as the
+	// picture: without it the two drift apart by the length of the gap and no
+	// frame is ever on time again.
+	if (_audioTrack && frame._audioNumSamples == uint32(-1)) {
+		uint32 queued = _audioTrack->queueSilence(_audioSamplesPerFrame);
+		if (queued) {
+			frame._audioNumSamples = queued;
+		}
+	}
+
+	_demuxedFrames.push(frame);
+	return true;
+}
+
+void HNMDecoder::readNextPacket() {
+	// We are called to feed a frame. Demux a few of them ahead of that so the
+	// sound they carry reaches the mixer with room to spare: queuing it only as
+	// each frame is shown leaves the mixer a single frame of samples in hand,
+	// and it then falls silent for a few milliseconds every time a frame is
+	// presented a little late. While looping there is no reading ahead, as the
+	// video track has to be restarted at the point the loop is shown, not read.
+	int readAhead = (_audioTrack && !_loop) ? (int)kDemuxReadAhead : 1;
+	while (_demuxedFrames.size() < readAhead) {
+		if (!demuxFrame()) {
+			break;
+		}
+	}
+
+	if (_demuxedFrames.empty()) {
+		error("End of file but still requesting data");
+	}
+
+	// Now decode the picture of the frame whose turn it is
+	DemuxedFrame frame = _demuxedFrames.pop();
+	byte *data_p = frame._data;
+	uint32 remaining = frame._size;
+	while (remaining > 0) {
+		uint32 chunkSize = READ_LE_UINT32(data_p);
+		uint16 chunkType = READ_BE_UINT16(data_p + sizeof(uint32));
+		uint16 flags     = READ_LE_UINT16(data_p + sizeof(uint32) + sizeof(uint16));
+
+		// The sound was dealt with while demuxing
+		if (!isSoundChunk(chunkType)) {
+			_videoTrack->decodeChunk(data_p + 8, chunkSize - 8, chunkType, flags);
+		}
+
+		if (_alignedChunks) {
+			chunkSize = ((chunkSize + 3) / 4) * 4;
+		}
+
+		data_p += chunkSize;
+		remaining -= chunkSize;
+	}
+	delete[] frame._data;
+
+
+	_videoTrack->newFrame(frame._audioNumSamples);
 }
 
 HNMDecoder::HNMVideoTrack::HNMVideoTrack(uint32 frameCount,
@@ -1174,6 +1331,53 @@ uint32 HNMDecoder::DPCMAudioTrack::decodeSound(uint16 chunkType, byte *data, uin
 	}
 
 	_audioStream->queueBuffer((byte *)out, size * sizeof(*out), DisposeAfterUse::YES, flags);
+	return numSamples;
+}
+
+HNMDecoder::PCMAudioTrack::PCMAudioTrack(uint sampleRate, bool is16bits,
+        Audio::Mixer::SoundType soundType) : HNMAudioTrack(soundType),
+	_audioStream(Audio::makeQueuingAudioStream(sampleRate, false)),
+	_bufferFlags(is16bits ? (Audio::FLAG_16BITS | Audio::FLAG_LITTLE_ENDIAN) : Audio::FLAG_UNSIGNED),
+	// 16 bit samples are signed, 8 bit ones are not
+	_silenceValue(is16bits ? 0x00 : 0x80), _bytesPerSample(is16bits ? 2 : 1) {
+}
+
+HNMDecoder::PCMAudioTrack::~PCMAudioTrack() {
+	delete _audioStream;
+}
+
+uint32 HNMDecoder::PCMAudioTrack::decodeSound(uint16 chunkType, byte *data, uint32 size) {
+	// Whole samples only
+	size -= size % _bytesPerSample;
+	if (size == 0) {
+		return 0;
+	}
+
+	// data points into the buffer the demuxer reuses, so the samples need a
+	// place of their own for as long as the mixer holds on to them
+	byte *buffer = (byte *)malloc(size);
+	if (!buffer) {
+		error("Couldn't allocate HNM sound buffer");
+	}
+	memcpy(buffer, data, size);
+	_audioStream->queueBuffer(buffer, size, DisposeAfterUse::YES, _bufferFlags);
+
+	return size / _bytesPerSample;
+}
+
+uint32 HNMDecoder::PCMAudioTrack::queueSilence(uint32 numSamples) {
+	if (!numSamples) {
+		return 0;
+	}
+
+	uint32 size = numSamples * _bytesPerSample;
+	byte *buffer = (byte *)malloc(size);
+	if (!buffer) {
+		error("Couldn't allocate HNM sound buffer");
+	}
+	memset(buffer, _silenceValue, size);
+	_audioStream->queueBuffer(buffer, size, DisposeAfterUse::YES, _bufferFlags);
+
 	return numSamples;
 }
 
