@@ -1369,6 +1369,11 @@ void EdenGraphics::playHNM(int16 num) {
 		_game->_globals->_varF1 = RoomFlags::rf40 | RoomFlags::rf04 | RoomFlags::rf01;
 	if (_game->_globals->_curVideoNum == 149)
 		_game->_globals->_varF1 = RoomFlags::rf40 | RoomFlags::rf04 | RoomFlags::rf01;
+
+	// No subtitle of this movie is on screen any more. Leaving the index behind
+	// keeps matching the dialog lines which caption the movie, and those then
+	// win over whatever else wants to say something, the panel included.
+	_game->_globals->_videoSubtitleIndex = 0;
 }
 
 void EdenGraphics::initGlobals() {
