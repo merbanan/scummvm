@@ -5350,6 +5350,13 @@ void EdenGame::load() {
 	drawTopScreen();
 	_globals->_inventoryScrollPos = 0;
 	showObjects();
+	// The bars were just drawn into the main view, which updateRoom() is about
+	// to black out before sliding them back in from the backup view. Put them
+	// there, and ask for the slide, like starting or restarting a game does:
+	// without this the bars either stay black or slide the previous game's
+	// location and inventory back in.
+	saveFriezes();
+	_graphics->setShowBlackBars(true);
 	updateRoom(_globals->_roomNum);
 	if (talk) {
 		_globals->_iconsIndex = 4;
