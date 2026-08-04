@@ -590,6 +590,11 @@ bool HNM1Decoder::loadStream(Common::SeekableReadStream *stream) {
 			return false;
 		}
 
+		// A record opens with its own length, and the offsets can reach past it:
+		// one movie on the demo disc has a record trailed by leftovers from
+		// whatever built the file, command line and all. Go by the record.
+		size = MIN(size, (uint32)MAX<uint16>(READ_LE_UINT16(record), 4));
+
 		uint32 imageChunk, soundStart, soundSize;
 		bool usable = parseRecord(record, size, imageChunk, soundStart, soundSize);
 
@@ -608,12 +613,15 @@ bool HNM1Decoder::loadStream(Common::SeekableReadStream *stream) {
 				// Mode 0xFF renders into an off screen buffer instead, which
 				// isn't implemented, so give up on the whole movie rather than
 				// put those frames on screen as if they were complete
-				// pictures.
-				if (mode != 0xFE ||
-				        (checksum != 0xAB && checksum != 0xAC && checksum != 0xAD) ||
-				        !chunkHeight || chunkHeight > kMaxHeight)
+				// pictures. A frame which is neither, or which is packed in a
+				// way we don't know, is left to fail when its turn comes: that
+				// holds the picture for a frame instead of losing a whole
+				// movie over one of them.
+				if (mode == 0xFF)
 					usable = false;
-				else
+				else if (mode == 0xFE && chunkHeight && chunkHeight <= kMaxHeight &&
+				         (checksum == 0xAB || checksum == 0xAC || checksum == 0xAD))
+					// Only a frame we can draw has a say in how tall the movie is
 					height = MAX(height, chunkHeight);
 			}
 		}
@@ -771,6 +779,9 @@ const Graphics::Surface *HNM1Decoder::HNM1VideoTrack::decodeNextFrame() {
 	_stream->seek(start, SEEK_SET);
 	if (_stream->read(_record, size) != size)
 		return &_surface;
+
+	// The record's own length wins over the offsets, which can reach past it
+	size = MIN(size, (uint32)MAX<uint16>(READ_LE_UINT16(_record), 4));
 
 	// Palette updates have to be applied before the image is decoded
 	uint32 pos = 2;
