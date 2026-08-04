@@ -484,6 +484,7 @@ private:
 	void phase544();
 	void phase560();
 	void getSaveStateName(char *dest, int size, int16 slot);
+	byte getSaveAreaNum(int16 slot);
 	void displaySaveSlots();
 	void saveGame(char *name);
 	void loadrestart();

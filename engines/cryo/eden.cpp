@@ -2302,53 +2302,85 @@ void EdenGame::my_bulle() {
 	int16 wordsOnLine = 0;
 	int16 wordWidth = 0;
 	int16 lineWidth = 0;
+	// A phrase can ask for the value of a game variable to be spelled out in the
+	// middle of it, so characters don't always come straight from the phrase
+	char number[8];
+	const char *numberPtr = nullptr;
 	byte c;
-	while ((c = *textPtr++) != 0xFF) {
-		if (c == 0x11 || c == 0x13) {
-			if (_globals->_phaseNum <= 272 || _globals->_phaseNum == 386) {
-				_globals->_eloiHaveNews = c & 0xF;
-				_globals->_var4D = _globals->_worldTyranSighted;
+	for (;;) {
+		if (numberPtr) {
+			c = *numberPtr++;
+			if (!c) {
+				numberPtr = nullptr;
+				continue;
 			}
-		} else if (c >= 0x80 && c < 0x90)
-			SysBeep(1);
-		else if (c >= 0x90 && c < 0xA0) {
-			while (*textPtr++ != 0xFF) {}
-			textPtr--;
-		} else if (c >= 0xA0 && c < 0xC0)
-			_globals->_textToken1 = c & 0xF;
-		else if (c >= 0xC0 && c < 0xD0)
-			_globals->_textToken2 = c & 0xF;
-		else if (c >= 0xD0 && c < 0xE0) {
-			byte c1 = *textPtr++;
-			if (c == 0xD2)
-#ifdef FAKE_DOS_VERSION
-				_globals->_textWidthLimit = c1 + 160;
-#else
-				_globals->_textWidthLimit = c1 + _subtitlesXCenter; // TODO: signed? 160 in pc ver
-#endif
-			else {
-				byte c2 = *textPtr++;
-				switch (_globals->_numGiveObjs) {
-				case 0:
-					_globals->_giveObj1 = c2;
-					break;
-				case 1:
-					_globals->_giveObj2 = c2;
-					break;
-				case 2:
-					_globals->_giveObj3 = c2;
-					break;
-				default:
-					break;
+		} else {
+			c = *textPtr++;
+			if (c == 0xFF)
+				break;
+
+			if (c == 0x11 || c == 0x13) {
+				if (_globals->_phaseNum <= 272 || _globals->_phaseNum == 386) {
+					_globals->_eloiHaveNews = c & 0xF;
+					_globals->_var4D = _globals->_worldTyranSighted;
 				}
-				_globals->_numGiveObjs++;
-				*icons++ = *textPtr++;
-				*icons++ = *textPtr++;
-				*icons++ = c2;
-			}
-		} else if (c >= 0xE0 && c < 0xFF)
-			SysBeep(1);
-		else if (c != '\r') {
+				continue;
+			} else if (c >= 0x80 && c < 0x90) {
+				SysBeep(1);
+				continue;
+			} else if (c == 0x91) {
+				// Spell out a byte variable, named by the byte which follows.
+				// The panel's save and load lines number their slot this way.
+				Common::sprintf_s(number, sizeof(number), "%d", getByteVar(*textPtr++));
+				numberPtr = number;
+				continue;
+			} else if (c >= 0x90 && c < 0xA0) {
+				while (*textPtr++ != 0xFF) {}
+				textPtr--;
+				continue;
+			} else if (c >= 0xA0 && c < 0xC0) {
+				_globals->_textToken1 = c & 0xF;
+				continue;
+			} else if (c >= 0xC0 && c < 0xD0) {
+				_globals->_textToken2 = c & 0xF;
+				continue;
+			} else if (c >= 0xD0 && c < 0xE0) {
+				byte c1 = *textPtr++;
+				if (c == 0xD2)
+#ifdef FAKE_DOS_VERSION
+					_globals->_textWidthLimit = c1 + 160;
+#else
+					_globals->_textWidthLimit = c1 + _subtitlesXCenter; // TODO: signed? 160 in pc ver
+#endif
+				else {
+					byte c2 = *textPtr++;
+					switch (_globals->_numGiveObjs) {
+					case 0:
+						_globals->_giveObj1 = c2;
+						break;
+					case 1:
+						_globals->_giveObj2 = c2;
+						break;
+					case 2:
+						_globals->_giveObj3 = c2;
+						break;
+					default:
+						break;
+					}
+					_globals->_numGiveObjs++;
+					*icons++ = *textPtr++;
+					*icons++ = *textPtr++;
+					*icons++ = c2;
+				}
+				continue;
+			} else if (c >= 0xE0 && c < 0xFF) {
+				SysBeep(1);
+				continue;
+			} else if (c == '\r')
+				continue;
+		}
+
+		{
 			*sentencePtr++ = c;
 			byte width = _gameFont[c];
 #ifdef FAKE_DOS_VERSION
@@ -5232,10 +5264,20 @@ void EdenGame::noclicpanel() {
 		if (_curSpot2->_objectId == (uint16)((_globals->_menuItemIdLo + _globals->_menuItemIdHi) << 8)) //TODO: check me
 			return;
 	} else {
-		int idx = _curSpot2 - &_gameIcons[105];
-		if (idx == 0) {
-			_globals->_menuItemIdLo = 1;
-			num = 1;
+		int idx = _curSpot2 - &_gameIcons[kFirstLoadIcon];
+		if (idx >= 0 && idx < kNumSaveSlots) {
+			// A load line names the place its saved game was made in. The dialog
+			// has a line per area and picks between them on the area number left
+			// here, so hand it the one out of the save rather than the one being
+			// played; the slot itself is spelled out of _var43.
+			byte areaNum = getSaveAreaNum(idx);
+			if (!areaNum)
+				return;
+			num = idx + 1;
+			if (num == _globals->_var43)
+				return;
+			_globals->_var43 = num;
+			_globals->_menuItemIdLo = areaNum;
 			goto skip;
 		}
 		num = (idx & 0x7F) + 1;
@@ -5243,7 +5285,8 @@ void EdenGame::noclicpanel() {
 			num = 1;
 		if (num == _globals->_var43)
 			return;
-		_globals->_var43 = 0;
+		// The panel's save and load lines name their slot by spelling this out
+		_globals->_var43 = num;
 	}
 	num = _globals->_menuItemIdLo;
 	_globals->_menuItemIdLo = _curSpot2->_objectId & 0xFF;
@@ -6452,6 +6495,29 @@ void EdenGame::phase560() {
 
 void EdenGame::getSaveStateName(char *dest, int size, int16 slot) {
 	Common::sprintf_s(dest, size, "edsave1.%03d", slot);
+}
+
+// The area number is the first thing syncGlobalValues() writes, and
+// syncGlobalPointers() puts thirteen indices in front of it.
+static const int32 kSaveAreaNumOffset = 13 * 4;
+
+// Read which of the game's twelve areas a saved game was made in, without
+// loading it. The panel names the place in its load lines, and the dialog picks
+// which of them to show by looking at the area number.
+byte EdenGame::getSaveAreaNum(int16 slot) {
+	char name[32];
+	getSaveStateName(name, sizeof(name), slot);
+
+	Common::InSaveFile *fh = g_system->getSavefileManager()->openForLoading(name);
+	if (!fh)
+		return 0;
+
+	byte areaNum = 0;
+	if (fh->seek(kSaveAreaNumOffset, SEEK_SET))
+		areaNum = fh->readByte();
+	delete fh;
+
+	return areaNum;
 }
 
 // Draw the names of the existing saved games into the panel's load box, which
