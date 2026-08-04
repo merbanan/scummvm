@@ -71,7 +71,10 @@ void EdenGame::verifh(byte *ptr) {
 }
 
 void EdenGame::openbigfile() {
-	_bigfile.open("EDEN.DAT");
+	// Everything the game reads lives in here, so there is nothing to be done
+	// without it. Saying so beats asserting on the first read.
+	if (!_bigfile.open("EDEN.DAT"))
+		error("Could not open EDEN.DAT");
 
 	char buf[16];
 	int count = _bigfile.readUint16LE();
