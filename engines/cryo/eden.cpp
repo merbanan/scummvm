@@ -7699,7 +7699,7 @@ void EdenGame::displayMappingLine(int16 r3, int16 r4, byte *target, byte *textur
 }
 
 // PC cursor
-CubeCursor _cursorsPC[9] = {
+CubeCursor _cursorsPC[10] = {
 		{ { 0, 0, 0, 0, 0, 0 }, 3, 2 },
 		{ { 1, 1, 0, 1, 1, 0 }, 2, -2 },
 		{ { 2, 2, 2, 2, 2, 2 }, 1, 2 },
@@ -7709,7 +7709,13 @@ CubeCursor _cursorsPC[9] = {
 		{ { 6, 6, 6, 6, 6, 6 }, 1, 2 },
 		{ { 7, 7, 7, 7, 7, 7 }, 1, -2 },
 //		{ { 0, 8, 0, 0, 8, 8 }, 2, 2 },
-		{ { 0, 8, 0, 0, 8, 8 }, 2, 2 }
+		{ { 0, 8, 0, 0, 8, 8 }, 2, 2 },
+		// The face drDrawFlag20 asks for, which the table used to stop one entry
+		// short of: enginePC() would read past its end. The tenth texture of the
+		// icon bank is pale stone rather than a symbol on a dark face, and the
+		// rotation is the one cursor 0 turns at, which is where the pointer sits
+		// for most of such a room.
+		{ { 9, 9, 9, 9, 9, 9 }, 3, 2 }
 };
 
 XYZ _cubePC[6][3] = {
@@ -7984,6 +7990,7 @@ void EdenGame::initCubePC() {
 }
 
 void EdenGame::selectPCMap(int16 num) {
+	num = CLIP<int16>(num, 0, ARRAYSIZE(_cursorsPC) - 1);
 	if (num != _cursCurPCMap) {
 		_pcCursor = &_cursorsPC[num];
 		unsigned char *bank = _mainBankBuf + READ_LE_UINT16(_mainBankBuf);
