@@ -947,6 +947,15 @@ void EdenGraphics::displayEffect2() {
 		displayEffect4();
 		return;
 	}
+	// The DOS release stipples one picture away and the next one in, which is
+	// what effetpix() does; its own dots fall in the order a table gives, and
+	// the table is built as the driver loads, so these fall in the order the
+	// engine's own does instead. Number 16 is the one asking for it, and the
+	// driver keeps an entry apiece for it and for 6 and 20.
+	if (_game->_globals->_var103 == 16) {
+		effetpix();
+		return;
+	}
 	switch (++_eff2pat) {
 	case 1:
 		colimacon(pattern1);

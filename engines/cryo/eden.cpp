@@ -1042,11 +1042,10 @@ void EdenGame::display() {
 		CLBlitter_CopyView2Screen(_graphics->getMainView());
 	} else {
 		if (_globals->_mirrorEffect) {
-			// The number chooses a transition in the DOS release, which passes
-			// it to its own library: 6, 16 and 20 are the ones it asks for. The
-			// Macintosh release, which this follows, takes any of them as the
-			// fade below, and leaves displayEffect1() written but called from
-			// nowhere - so a DOS transition is one of the things still missing.
+			// The number chooses a transition in the DOS release, which hands it
+			// to VGA386.DRV: 6, 16 and 20 are the ones it asks for, and each has
+			// an entry of its own in the driver's table. The Macintosh release,
+			// which this follows, takes any of them as the fade below.
 			debugC(1, kDebugGraphics, "Transition %d into room 0x%X, which the fade stands in for",
 			       _globals->_mirrorEffect, _globals->_roomNum);
 			_graphics->displayEffect3();
