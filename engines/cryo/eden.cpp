@@ -4286,6 +4286,8 @@ void EdenGame::edmain() {
 			}
 		}
 		_graphics->rundcurs();
+		// A room which keeps its picture in a movie goes on showing it
+		_graphics->stepRoomVideo();
 		musicspy();
 		FRDevents();
 		handleNarrator();

@@ -54,6 +54,8 @@ EdenGraphics::EdenGraphics(EdenGame *game) : _game(game) {
 	_underBarsView = nullptr;
 	_needToFade = false;
 	_eff2pat = 0;
+	_roomVideo = nullptr;
+	_roomVideoNum = 0;
 	_tracedSpriteIndex = _tracedSpriteBank = _tracedSpriteX = _tracedSpriteY = -1;
 
 	_savedUnderSubtitles = false;
@@ -72,6 +74,7 @@ EdenGraphics::EdenGraphics(EdenGame *game) : _game(game) {
 }
 
 EdenGraphics::~EdenGraphics() {
+	closeRoomVideo();
 	delete _underBarsView;
 	delete _view2;
 	delete _subtitlesView;
@@ -736,65 +739,111 @@ static const int16 kPictureHeight = 160;
  * movie, and afsalle plays it here for every such room, whether it scrolls or
  * not. The Macintosh release has banks in their place and never comes this way.
  */
-void EdenGraphics::playRoomVideo(int16 num) {
+/** Open the movie a room takes its picture from. False when there is none. */
+bool EdenGraphics::openRoomVideo(int16 num) {
 	const uint16 resNum = num - 1 + 485;
 	Common::SeekableReadStream *stream = _game->loadSubStream(resNum);
 	if (!stream)
-		return;
+		return false;
 
-	Video::VideoDecoder *decoder = new Video::HNMDecoder(g_system->getScreenFormat());
-	if (!decoder->loadStream(stream)) {
+	_roomVideo = new Video::HNMDecoder(g_system->getScreenFormat());
+	if (!_roomVideo->loadStream(stream)) {
 		// The valleys are of the older untagged kind. loadStream() takes the
 		// stream over either way, so the second attempt needs one of its own.
-		delete decoder;
+		delete _roomVideo;
 		stream = _game->loadSubStream(resNum);
-		decoder = new HNM1Decoder();
-		if (!stream || !decoder->loadStream(stream)) {
+		_roomVideo = new HNM1Decoder();
+		if (!stream || !_roomVideo->loadStream(stream)) {
 			debugC(1, kDebugMovie, "Room movie %d (resource %d) is in no format we decode", num, resNum);
-			delete decoder;
+			delete _roomVideo;
+			_roomVideo = nullptr;
+			return false;
+		}
+	}
+
+	_roomVideoNum = num;
+	_roomVideo->start();
+	return true;
+}
+
+void EdenGraphics::closeRoomVideo() {
+	delete _roomVideo;
+	_roomVideo = nullptr;
+	_roomVideoNum = 0;
+}
+
+/**
+ * Show one frame of the movie a room takes its picture from, if one is due.
+ * Called every pass round the game's own loop, so the picture goes on moving
+ * for as long as the room is up, and begins again when it runs out.
+ */
+void EdenGraphics::stepRoomVideo() {
+	if (!_roomVideo)
+		return;
+
+	if (_roomVideo->endOfVideo()) {
+		// The water comes back to where it started, so it can simply begin
+		// again. Opening it afresh costs a header and a table of offsets, the
+		// frames themselves being read as they are wanted.
+		const int16 num = _roomVideoNum;
+		closeRoomVideo();
+		if (!openRoomVideo(num))
 			return;
-		}
 	}
 
-	debugC(1, kDebugMovie, "Room movie %d (resource %d), %d frames of %dx%d",
-	       num, resNum, decoder->getFrameCount(), decoder->getWidth(), decoder->getHeight());
+	if (!_roomVideo->needsUpdate())
+		return;
 
-	decoder->start();
-	while (!_game->_vm->shouldQuit() && !decoder->endOfVideo()) {
-		if (!decoder->needsUpdate()) {
-			_game->_vm->pollEvents(CLIP<uint32>(decoder->getTimeToNextFrame(), 1, 10));
-			continue;
-		}
+	// The frames come two to a picture: the even ones are its left half and the
+	// odd ones its right, and they join without a seam. A room which scrolls is
+	// that picture, both halves of it, which is what afsalle asks the decoder
+	// twice for. A room which does not takes the left half alone.
+	const int16 dstX = ((_roomVideo->getCurFrame() + 1) & 1) ? 320 : 0;
 
-		// The frames come two to a picture: the even ones are its left half and
-		// the odd ones its right, and they join without a seam. A room which
-		// scrolls is that picture, both halves of it, which is why afsalle asks
-		// the decoder twice for one. A room which does not takes the left half
-		// alone, that being all of it there is room for.
-		const int curFrame = decoder->getCurFrame() + 1;
-		const int16 dstX = (curFrame & 1) ? 320 : 0;
-
-		const Graphics::Surface *frame = decoder->decodeNextFrame();
-		if (frame) {
-			const int16 w = MIN<int16>(frame->w, 320);
-			const int16 h = MIN<int16>(frame->h, kPictureHeight);
-			for (int16 y = 0; y < h; y++)
-				memcpy(_mainViewBuf + (kPictureTop + y) * 640 + dstX, frame->getBasePtr(0, y), w);
-		}
-		if (decoder->hasDirtyPalette()) {
-			const byte *framePalette = decoder->getPalette();
-			color_t palette[256];
-			for (int i = 0; i < 256; i++) {
-				palette[i].r = framePalette[i * 3 + 0] << 8;
-				palette[i].g = framePalette[i * 3 + 1] << 8;
-				palette[i].b = framePalette[i * 3 + 2] << 8;
-			}
-			CLBlitter_Send2ScreenNextCopy(palette, 0, 256);
-		}
-		CLBlitter_CopyView2Screen(_mainView);
+	const Graphics::Surface *frame = _roomVideo->decodeNextFrame();
+	if (frame) {
+		const int16 w = MIN<int16>(frame->w, 320);
+		const int16 h = MIN<int16>(frame->h, kPictureHeight);
+		for (int16 y = 0; y < h; y++)
+			memcpy(_mainViewBuf + (kPictureTop + y) * 640 + dstX, frame->getBasePtr(0, y), w);
 	}
 
-	delete decoder;
+	if (_roomVideo->hasDirtyPalette()) {
+		// The room has no bank to take a palette from, so this is its palette:
+		// keep it, or the next fade puts the last room's colours back over it
+		const byte *framePalette = _roomVideo->getPalette();
+		for (int i = 0; i < 256; i++) {
+			color3_t color;
+			color.r = framePalette[i * 3 + 0] << 8;
+			color.g = framePalette[i * 3 + 1] << 8;
+			color.b = framePalette[i * 3 + 2] << 8;
+			CLPalette_SetRGBColor(_globalPalette, i, &color);
+		}
+		CLBlitter_Send2ScreenNextCopy(_globalPalette, 0, 256);
+	}
+
+	CLBlitter_CopyView2Screen(_mainView);
+}
+
+/**
+ * Put up the picture of a room which keeps it in a movie, and leave the movie
+ * open so that it goes on moving. Both halves are drawn at once, so the picture
+ * is whole before the room draws anything over it.
+ */
+void EdenGraphics::playRoomVideo(int16 num) {
+	closeRoomVideo();
+	if (!openRoomVideo(num))
+		return;
+
+	debugC(1, kDebugMovie, "Room movie %d, %d frames of %dx%d",
+	       num, _roomVideo->getFrameCount(), _roomVideo->getWidth(), _roomVideo->getHeight());
+
+	// Both halves, so that nothing of the room before this is left showing
+	for (int i = 0; i < 2 && !_roomVideo->endOfVideo(); i++) {
+		while (!_roomVideo->needsUpdate() && !_game->_vm->shouldQuit())
+			_game->_vm->pollEvents(CLIP<uint32>(_roomVideo->getTimeToNextFrame(), 1, 10));
+		stepRoomVideo();
+	}
 }
 
 // Original name afsalle1
@@ -951,6 +1000,7 @@ void EdenGraphics::displayRoom() {
 		}
 	}
 	else {
+		closeRoomVideo();
 		// Not garbage, whatever the note here used to say: afsalle reads this
 		// very number, and passes it to the player above when the room is one
 		debugC(1, kDebugGraphics, "Displaying room 0x%X from bank %d", _game->_globals->_roomNum, _game->_globals->_roomImgBank);
