@@ -864,11 +864,17 @@ void EdenGraphics::displayRoom() {
 			//     Uluru      41 -> TUNA.HNM     Cantura    44 -> CONT.HNM
 			//     Koto       42 -> KOTO.HNM     Shandovra  45 -> HAND.HNM
 			//
-			// They are of the older untagged kind, which HNM1Decoder reads, so
-			// drawing a valley here as the DOS release does is a matter of
-			// decoding room->_bank as a movie rather than loading it as a bank.
-			// Taken as a bank it lands on MAGUS and MIRAN, two characters, and
-			// the valley comes out as a 21 by 9 blob beside one of them.
+			// They are of the older untagged kind, which HNM1Decoder reads, and
+			// they are animations rather than pictures: GAAT.HNM holds thirty
+			// two complete 320 by 160 frames of the valley. It runs for a few of
+			// them before Eloi is spoken to, and runs again once Dina has been.
+			// That is why afsalle calls into the decoder twice - the first call
+			// opens it and takes a frame, which is all a room that does not
+			// scroll wants, and the second is the loop which plays it.
+			//
+			// So a valley wants room->_bank played as a movie, not loaded as a
+			// bank. Taken as a bank it lands on MAGUS and MIRAN, two characters,
+			// and the valley comes out as a 21 by 9 blob beside one of them.
 			_game->_globals->_displayFlags |= DisplayFlags::dfPanable;
 			_game->_globals->_varF4 = 0;
 			rundcurs();
