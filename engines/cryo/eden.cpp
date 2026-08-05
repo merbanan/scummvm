@@ -6541,7 +6541,14 @@ void EdenGame::phase560() {
 }
 
 void EdenGame::getSaveStateName(char *dest, int size, int16 slot) {
-	Common::sprintf_s(dest, size, "edsave1.%03d", slot);
+	// A saved game carries the release's own dialogs, rooms, objects and people,
+	// but the conditions which choose between them are read from the game files
+	// and never saved. The releases number those conditions differently - the
+	// demo has 1021 of them, the DOS release 1022, the Macintosh one 1024 - so a
+	// save made by one release picks its lines by the wrong number in another,
+	// which shows the wrong subtitle and leaves the game going astray from
+	// there. They all used to share the one name, and so the one set of slots.
+	Common::sprintf_s(dest, size, "%s.%03d", ConfMan.getActiveDomainName().c_str(), slot);
 }
 
 /**
