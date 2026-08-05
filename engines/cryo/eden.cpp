@@ -1041,10 +1041,18 @@ void EdenGame::display() {
 		}
 		CLBlitter_CopyView2Screen(_graphics->getMainView());
 	} else {
-		if (_globals->_mirrorEffect)
+		if (_globals->_mirrorEffect) {
+			// The number chooses which transition the original plays. Only the
+			// fade of displayEffect3() was ever written, so every one of them
+			// comes out as that, and displayEffect1() is reached from nowhere.
+			debugC(1, kDebugGraphics, "Transition %d into room 0x%X", _globals->_mirrorEffect, _globals->_roomNum);
+			if (_globals->_mirrorEffect != 1)
+				warning("Transition %d is not written, fading instead", _globals->_mirrorEffect);
 			_graphics->displayEffect3();
-		else
+		} else {
+			debugC(1, kDebugGraphics, "Transition of the mirror, %d", _globals->_var103);
 			_graphics->displayEffect2();
+		}
 
 		_globals->_var103 = 0;
 		_globals->_mirrorEffect = 0;
