@@ -781,6 +781,12 @@ void EdenGraphics::stepRoomVideo() {
 	if (!_roomVideo)
 		return;
 
+	// Only while the room itself is up. Whatever else takes the screen over - a
+	// character being spoken to, the frescoes, the mirror, the panel - puts its
+	// own flag in place of the one afsalle set, and the valley waits behind it.
+	if (!(_game->_globals->_displayFlags & DisplayFlags::dfFlag80))
+		return;
+
 	if (_roomVideo->endOfVideo()) {
 		// The water comes back to where it started, so it can simply begin
 		// again. Opening it afresh costs a header and a table of offsets, the
