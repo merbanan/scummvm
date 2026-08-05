@@ -854,15 +854,21 @@ void EdenGraphics::displayRoom() {
 			// the purpose - Chamaar asks for 2474, and 2473 and 2474 are
 			// GAAT0000 and GAAT0001, the two halves of it.
 			//
-			// The DOS release has no such pair. Chamaar asks for 17 there, and
-			// 16 and 17 are MAGUS and MIRAN, two characters, so this draws a
-			// 21 by 9 blob and a character and calls it a valley. That release
-			// keeps the picture another way: its own afsalle hands the bank to
-			// the image decoder rather than loading it, and the decoder holds
-			// a screen of its own which the valley's arrival movie fills, so
-			// the picture outlives the movie and is presented again on the way
-			// back in. Putting that right means giving this a buffer of the
-			// same kind, not a different bank to load.
+			// The DOS release has no such pair, and asks for no bank at all: the
+			// number is a movie there. Its afsalle hands it to the image decoder
+			// rather than loading it, because 17 is the seventeenth movie, and
+			// the six valleys line up one apiece with the six the Macintosh cut
+			// into halves:
+			//
+			//     Chamaar    17 -> GAAT.HNM     Tamara     43 -> TAMA.HNM
+			//     Uluru      41 -> TUNA.HNM     Cantura    44 -> CONT.HNM
+			//     Koto       42 -> KOTO.HNM     Shandovra  45 -> HAND.HNM
+			//
+			// They are of the older untagged kind, which HNM1Decoder reads, so
+			// drawing a valley here as the DOS release does is a matter of
+			// decoding room->_bank as a movie rather than loading it as a bank.
+			// Taken as a bank it lands on MAGUS and MIRAN, two characters, and
+			// the valley comes out as a 21 by 9 blob beside one of them.
 			_game->_globals->_displayFlags |= DisplayFlags::dfPanable;
 			_game->_globals->_varF4 = 0;
 			rundcurs();
