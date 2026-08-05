@@ -4392,12 +4392,18 @@ void EdenGame::FRDevents() {
 	if (_globals->_displayFlags & DisplayFlags::dfFrescoes) {
 		if (_frescoTalk)
 			_graphics->restoreUnderSubtitles();
-		if (_currCursor == 9 && !_torchCursor) {
+		// The torch held up to the cave paintings is cursor 9 on the Macintosh
+		// but 15 on DOS, where the hotspot covering the paintings asks for what
+		// the original calls cuFa. Fifteen is also where the flute's icon sits
+		// in the main bank, so testing for the Macintosh number here put out the
+		// torch on the first frame and left a flute over an unlit wall.
+		const int16 torchCursor = (_vm->getPlatform() == Common::kPlatformMacintosh) ? 9 : 15;
+		if (_currCursor == torchCursor && !_torchCursor) {
 			_graphics->rundcurs();
 			_torchCursor = true;
 			_graphics->setGlowX(-1);
 		}
-		if (_currCursor != 9 && _torchCursor) {
+		if (_currCursor != torchCursor && _torchCursor) {
 			_graphics->unglow();
 			_torchCursor = false;
 			_cursorSaved = false;
