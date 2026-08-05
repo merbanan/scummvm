@@ -609,14 +609,20 @@ bool HNM1Decoder::loadStream(Common::SeekableReadStream *stream) {
 				uint16 chunkHeight = heightMode & 0xFF;
 				byte mode = heightMode >> 8;
 
-				// Mode 0xFE draws a complete picture into the visible area.
-				// Mode 0xFF renders into an off screen buffer instead, which
-				// isn't implemented, so give up on the whole movie rather than
-				// put those frames on screen as if they were complete
-				// pictures. A frame which is neither, or which is packed in a
-				// way we don't know, is left to fail when its turn comes: that
-				// holds the picture for a frame instead of losing a whole
-				// movie over one of them.
+				// Which buffer a frame goes to is bit 0x400 of its flags
+				// word, and mode 0xFF overrides that to the visible one. The
+				// movies using it stage a few complete pictures off screen and
+				// then composite a great many strips over them, each strip as
+				// wide as the low nine bits of those flags and placed by the
+				// four bytes the chunk leaves unpacked at the head of the
+				// buffer. Doing that means following the blitter the game
+				// dispatches into, which lives in a driver of its own
+				// (VGA386.DRV) rather than in the executable, so for now give
+				// up on the whole movie instead of putting strips on screen as
+				// if they were complete pictures. A frame which is neither, or
+				// which is packed in a way we don't know, is left to fail when
+				// its turn comes: that holds the picture for a frame instead of
+				// losing a whole movie over one of them.
 				if (mode == 0xFF)
 					usable = false;
 				else if (mode == 0xFE && chunkHeight && chunkHeight <= kMaxHeight &&
