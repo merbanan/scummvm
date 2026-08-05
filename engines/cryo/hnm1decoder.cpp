@@ -481,7 +481,11 @@ static bool parseRecord(const byte *record, uint32 size, uint32 &imageChunk,
 	while (pos + 4 <= size) {
 		uint16 tag = READ_LE_UINT16(record + pos);
 		if (tag != kChunkSound && tag != kChunkPalette) {
-			imageChunk = pos;
+			// A picture needs ten bytes of header at least. Records exist which
+			// carry only sound and then four bytes of padding, and that padding
+			// is not a short picture.
+			if (pos + 10 <= size)
+				imageChunk = pos;
 			return true;
 		}
 
@@ -609,24 +613,14 @@ bool HNM1Decoder::loadStream(Common::SeekableReadStream *stream) {
 				uint16 chunkHeight = heightMode & 0xFF;
 				byte mode = heightMode >> 8;
 
-				// Which buffer a frame goes to is bit 0x400 of its flags
-				// word, and mode 0xFF overrides that to the visible one. The
-				// movies using it stage a few complete pictures off screen and
-				// then composite a great many strips over them, each strip as
-				// wide as the low nine bits of those flags and placed by the
-				// four bytes the chunk leaves unpacked at the head of the
-				// buffer. Doing that means following the blitter the game
-				// dispatches into, which lives in a driver of its own
-				// (VGA386.DRV) rather than in the executable, so for now give
-				// up on the whole movie instead of putting strips on screen as
-				// if they were complete pictures. A frame which is neither, or
-				// which is packed in a way we don't know, is left to fail when
-				// its turn comes: that holds the picture for a frame instead of
-				// losing a whole movie over one of them.
-				if (mode == 0xFF)
-					usable = false;
-				else if (mode == 0xFE && chunkHeight && chunkHeight <= kMaxHeight &&
-				         (checksum == 0xAB || checksum == 0xAC || checksum == 0xAD))
+				// Mode 0xFE brings a complete picture and mode 0xFF a strip
+				// to lay over it, both of which decodeImage() draws. A frame
+				// which is neither, or which is packed in a way we don't know,
+				// is left to fail when its turn comes: that holds the picture
+				// for a frame instead of losing a whole movie over one of them.
+				if ((mode == 0xFE || mode == 0xFF) && chunkHeight &&
+				        chunkHeight <= kMaxHeight &&
+				        (checksum == 0xAB || checksum == 0xAC || checksum == 0xAD))
 					// Only a frame we can draw has a say in how tall the movie is
 					height = MAX(height, chunkHeight);
 			}
@@ -699,7 +693,12 @@ bool HNM1Decoder::HNM1VideoTrack::decodeImage(const byte *chunk, uint32 size) {
 	if (size < 10)
 		return false;
 
-	uint16 height = READ_LE_UINT16(chunk + 2) & 0xFF;
+	// A complete picture is as wide as the frame; a strip says how wide it is in
+	// the low nine bits of its flags
+	uint16 width = READ_LE_UINT16(chunk) & 0x1FF;
+	uint16 heightMode = READ_LE_UINT16(chunk + 2);
+	uint16 height = heightMode & 0xFF;
+	byte mode = heightMode >> 8;
 	const byte *compHeader = chunk + 4;
 	const byte *payload = chunk + 10;
 	uint32 payloadSize = size - 10;
@@ -709,8 +708,8 @@ bool HNM1Decoder::HNM1VideoTrack::decodeImage(const byte *chunk, uint32 size) {
 		checksum += compHeader[i];
 
 	uint32 uncompressed = READ_LE_UINT16(compHeader);
-	uint32 imageSize = (uint32)kWidth * height;
-	if (!height || height > _height || uncompressed < imageSize)
+	uint32 imageSize = (uint32)width * height;
+	if (!width || width > kWidth || !height || height > _height || uncompressed < imageSize)
 		return false;
 
 	// The image can be preceded by a few bytes of padding, which the original
@@ -720,6 +719,10 @@ bool HNM1Decoder::HNM1VideoTrack::decodeImage(const byte *chunk, uint32 size) {
 		return false;
 
 	const uint32 capacity = (uint32)kWidth * kMaxHeight + 4 + kDecodeSlack;
+
+	// The 0xAD scheme can keep the first four bytes of the chunk unpacked at the
+	// head of the buffer, which pushes the picture along by that much
+	uint32 plainBytes = 0;
 
 	if (checksum == 0xAB) {
 		if (!decodeHSQ(payload, payloadSize, _decodeBuffer, uncompressed, capacity))
@@ -743,6 +746,7 @@ bool HNM1Decoder::HNM1VideoTrack::decodeImage(const byte *chunk, uint32 size) {
 			out = 4;
 			src += 4;
 			srcSize -= 4;
+			plainBytes = 4;
 		}
 
 		uint32 end = out + uncompressed;
@@ -761,8 +765,42 @@ bool HNM1Decoder::HNM1VideoTrack::decodeImage(const byte *chunk, uint32 size) {
 		return false;
 	}
 
-	// Rows past this chunk's height keep whatever the last frame put there
-	memcpy(_surface.getPixels(), _decodeBuffer + imageOffset, imageSize);
+	const byte *src = _decodeBuffer + plainBytes + imageOffset;
+
+	if (mode == 0xFF) {
+		// A strip, which the movies pair with the complete pictures they stage
+		// off screen. It says where it goes in the four bytes it keeps unpacked
+		// at the head of the buffer, and the zeroes in it are left alone so that
+		// what is already there shows through. Without those bytes there is
+		// nothing to go on but the middle of the frame.
+		uint16 left = (kWidth - width) / 2;
+		uint16 top = (_height - height) / 2;
+		if (plainBytes == 4) {
+			left = READ_LE_UINT16(_decodeBuffer);
+			top = READ_LE_UINT16(_decodeBuffer + 2);
+		}
+		if (left + width > kWidth || top + height > _height)
+			return false;
+		byte *dst = (byte *)_surface.getPixels() + (uint32)top * kWidth + left;
+		for (uint16 row = 0; row < height; row++) {
+			for (uint16 col = 0; col < width; col++) {
+				if (src[col])
+					dst[col] = src[col];
+			}
+			src += width;
+			dst += kWidth;
+		}
+		return true;
+	}
+
+	// A complete picture is laid down as it comes, and rows past its height keep
+	// whatever the last frame put there
+	byte *dst = (byte *)_surface.getPixels();
+	for (uint16 row = 0; row < height; row++) {
+		memcpy(dst, src, width);
+		src += width;
+		dst += kWidth;
+	}
 	return true;
 }
 
