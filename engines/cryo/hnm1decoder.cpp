@@ -447,7 +447,8 @@ static bool decodeRLE(const byte *bits, uint32 bitsSize, byte *dst, uint32 dstCa
  * chunks: runs of (start, count, RGB triples), terminated by 0xFF,0xFF.
  * Components are 6 bits wide.
  */
-static bool readPalette(const byte *data, uint32 size, uint32 &used, Graphics::Palette &palette) {
+static bool readPalette(const byte *data, uint32 size, uint32 &used, Graphics::Palette &palette,
+                        uint16 *first = nullptr, uint16 *last = nullptr) {
 	uint32 pos = 0;
 	for (;;) {
 		if (pos + 2 > size)
@@ -462,6 +463,13 @@ static bool readPalette(const byte *data, uint32 size, uint32 &used, Graphics::P
 			return false;
 		for (uint16 i = 0; i < num; i++, pos += 3)
 			palette.set(start + i, data[pos] * 4, data[pos + 1] * 4, data[pos + 2] * 4);
+		// A movie names only the colours it uses. The rest belong to whatever
+		// else is on screen - the cursor and the friezes among them - and are
+		// not the movie's to give away.
+		if (first && start < *first)
+			*first = start;
+		if (last && start + num - 1 > *last)
+			*last = start + num - 1;
 	}
 	used = pos;
 	return true;
@@ -533,7 +541,8 @@ bool HNM1Decoder::loadStream(Common::SeekableReadStream *stream) {
 
 	Graphics::Palette palette(256);
 	uint32 used = 0;
-	if (!readPalette(header + 2, dataOffset - 2, used, palette)) {
+	uint16 palFirst = 255, palLast = 0;
+	if (!readPalette(header + 2, dataOffset - 2, used, palette, &palFirst, &palLast)) {
 		delete[] header;
 		return false;
 	}
@@ -654,9 +663,14 @@ bool HNM1Decoder::loadStream(Common::SeekableReadStream *stream) {
 			addTrack(new HNM1AudioTrack(audio, getSoundType()));
 	}
 
-	_videoTrack = new HNM1VideoTrack(stream, dataOffset, frameOffsets, rawPalette, height);
+	_videoTrack = new HNM1VideoTrack(stream, dataOffset, frameOffsets, rawPalette, height, palFirst, palLast);
 	addTrack(_videoTrack);
 	return true;
+}
+
+void HNM1Decoder::getPaletteRange(uint16 &first, uint16 &last) const {
+	first = _videoTrack ? _videoTrack->getPaletteFirst() : 0;
+	last = _videoTrack ? _videoTrack->getPaletteLast() : 0;
 }
 
 void HNM1Decoder::close() {
@@ -668,9 +682,11 @@ void HNM1Decoder::close() {
 }
 
 HNM1Decoder::HNM1VideoTrack::HNM1VideoTrack(Common::SeekableReadStream *stream, uint32 dataOffset,
-        const Common::Array<uint32> &frameOffsets, const byte *palette, uint16 height) :
+        const Common::Array<uint32> &frameOffsets, const byte *palette, uint16 height,
+        uint16 palFirst, uint16 palLast) :
 	_stream(stream), _dataOffset(dataOffset), _frameOffsets(frameOffsets), _curFrame(-1),
 	_height(height), _palette(palette, 256), _dirtyPalette(true), _record(nullptr),
+	_palFirst(palFirst), _palLast(palLast),
 	_recordAlloc(0) {
 
 	_surface.create(kWidth, _height, Graphics::PixelFormat::createFormatCLUT8());
@@ -685,7 +701,7 @@ HNM1Decoder::HNM1VideoTrack::~HNM1VideoTrack() {
 
 void HNM1Decoder::HNM1VideoTrack::updatePalette(const byte *data, uint32 size) {
 	uint32 used = 0;
-	if (readPalette(data, size, used, _palette))
+	if (readPalette(data, size, used, _palette, &_palFirst, &_palLast))
 		_dirtyPalette = true;
 }
 

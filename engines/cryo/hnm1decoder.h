@@ -85,6 +85,12 @@ public:
 	bool loadStream(Common::SeekableReadStream *stream) override;
 	void close() override;
 
+	/**
+	 * The range of colours the movie names, the rest belonging to whatever else
+	 * is on screen. Both zero when there is no picture to speak of.
+	 */
+	void getPaletteRange(uint16 &first, uint16 &last) const;
+
 private:
 	enum {
 		kWidth = 320,
@@ -99,7 +105,7 @@ private:
 	public:
 		HNM1VideoTrack(Common::SeekableReadStream *stream, uint32 dataOffset,
 		               const Common::Array<uint32> &frameOffsets, const byte *palette,
-		               uint16 height);
+		               uint16 height, uint16 palFirst, uint16 palLast);
 		~HNM1VideoTrack() override;
 
 		bool endOfTrack() const override { return _curFrame + 1 >= getFrameCount(); }
@@ -114,6 +120,13 @@ private:
 		const Graphics::Surface *decodeNextFrame() override;
 		const byte *getPalette() const override { _dirtyPalette = false; return _palette.data(); }
 		bool hasDirtyPalette() const override { return _dirtyPalette; }
+
+		/** Which colours the movie names. The rest are not its to give away. */
+		uint16 getPaletteFirst() const { return _palFirst; }
+		uint16 getPaletteLast() const { return _palLast; }
+
+		uint16 _palFirst;
+		uint16 _palLast;
 
 	private:
 		/** Decode an image chunk into the surface. */

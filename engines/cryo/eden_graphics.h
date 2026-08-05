@@ -170,6 +170,7 @@ private:
 	/** The movie a room which keeps its picture in one is showing, if any */
 	Video::VideoDecoder *_roomVideo;
 	int16 _roomVideoNum;
+	bool _roomVideoIsHNM1;
 
 	/** The last sprite spoken of, so that redrawing it is not spoken of again */
 	int16 _tracedSpriteIndex;

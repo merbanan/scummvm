@@ -56,6 +56,7 @@ EdenGraphics::EdenGraphics(EdenGame *game) : _game(game) {
 	_eff2pat = 0;
 	_roomVideo = nullptr;
 	_roomVideoNum = 0;
+	_roomVideoIsHNM1 = false;
 	_tracedSpriteIndex = _tracedSpriteBank = _tracedSpriteX = _tracedSpriteY = -1;
 
 	_savedUnderSubtitles = false;
@@ -746,12 +747,14 @@ bool EdenGraphics::openRoomVideo(int16 num) {
 	if (!stream)
 		return false;
 
+	_roomVideoIsHNM1 = false;
 	_roomVideo = new Video::HNMDecoder(g_system->getScreenFormat());
 	if (!_roomVideo->loadStream(stream)) {
 		// The valleys are of the older untagged kind. loadStream() takes the
 		// stream over either way, so the second attempt needs one of its own.
 		delete _roomVideo;
 		stream = _game->loadSubStream(resNum);
+		_roomVideoIsHNM1 = true;
 		_roomVideo = new HNM1Decoder();
 		if (!stream || !_roomVideo->loadStream(stream)) {
 			debugC(1, kDebugMovie, "Room movie %d (resource %d) is in no format we decode", num, resNum);
@@ -770,6 +773,7 @@ void EdenGraphics::closeRoomVideo() {
 	delete _roomVideo;
 	_roomVideo = nullptr;
 	_roomVideoNum = 0;
+	_roomVideoIsHNM1 = false;
 }
 
 /**
@@ -816,19 +820,32 @@ void EdenGraphics::stepRoomVideo() {
 
 	if (_roomVideo->hasDirtyPalette()) {
 		// The room has no bank to take a palette from, so this is its palette:
-		// keep it, or the next fade puts the last room's colours back over it
+		// keep it, or the next fade puts the last room's colours back over it.
+		//
+		// Only the colours the movie names, though. GAAT.HNM names 1 to 128 and
+		// leaves the rest alone, and the rest is what everything else on screen
+		// is drawn in - the cursor among it, which went black when all 256 were
+		// taken from the movie, the ones it never named being nothing at all.
+		uint16 first = 0, last = 255;
+		if (_roomVideoIsHNM1)
+			((HNM1Decoder *)_roomVideo)->getPaletteRange(first, last);
+
 		const byte *framePalette = _roomVideo->getPalette();
-		for (int i = 0; i < 256; i++) {
+		for (uint16 i = first; i <= last; i++) {
 			color3_t color;
 			color.r = framePalette[i * 3 + 0] << 8;
 			color.g = framePalette[i * 3 + 1] << 8;
 			color.b = framePalette[i * 3 + 2] << 8;
 			CLPalette_SetRGBColor(_globalPalette, i, &color);
 		}
+		debugC(2, kDebugMovie, "Room movie palette: colours %d..%d are its own", first, last);
 		CLBlitter_Send2ScreenNextCopy(_globalPalette, 0, 256);
 	}
 
-	CLBlitter_CopyView2Screen(_mainView);
+	// The screen is not ours to put up: the loop this is called from ends in
+	// display(), which sends the room's view over once everything - the cursor
+	// among it - has been drawn into it. Sending it here left the background
+	// saved from under the cursor out of step, and a black square with it.
 }
 
 /**
