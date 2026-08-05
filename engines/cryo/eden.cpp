@@ -1042,12 +1042,13 @@ void EdenGame::display() {
 		CLBlitter_CopyView2Screen(_graphics->getMainView());
 	} else {
 		if (_globals->_mirrorEffect) {
-			// The number chooses which transition the original plays. Only the
-			// fade of displayEffect3() was ever written, so every one of them
-			// comes out as that, and displayEffect1() is reached from nowhere.
-			debugC(1, kDebugGraphics, "Transition %d into room 0x%X", _globals->_mirrorEffect, _globals->_roomNum);
-			if (_globals->_mirrorEffect != 1)
-				warning("Transition %d is not written, fading instead", _globals->_mirrorEffect);
+			// The number chooses a transition in the DOS release, which passes
+			// it to its own library: 6, 16 and 20 are the ones it asks for. The
+			// Macintosh release, which this follows, takes any of them as the
+			// fade below, and leaves displayEffect1() written but called from
+			// nowhere - so a DOS transition is one of the things still missing.
+			debugC(1, kDebugGraphics, "Transition %d into room 0x%X, which the fade stands in for",
+			       _globals->_mirrorEffect, _globals->_roomNum);
 			_graphics->displayEffect3();
 		} else {
 			debugC(1, kDebugGraphics, "Transition of the mirror, %d", _globals->_var103);
