@@ -54,6 +54,7 @@ EdenGraphics::EdenGraphics(EdenGame *game) : _game(game) {
 	_underBarsView = nullptr;
 	_needToFade = false;
 	_eff2pat = 0;
+	_tracedSpriteIndex = _tracedSpriteBank = _tracedSpriteX = _tracedSpriteY = -1;
 
 	_savedUnderSubtitles = false;
 	_underSubtitlesViewBuf = nullptr;
@@ -129,8 +130,17 @@ void EdenGraphics::readPalette(byte *ptr) {
 
 // Original name: noclipax
 void EdenGraphics::drawSprite(int16 index, int16 x, int16 y, bool withBlack, bool onSubtitle) {
-	debugC(4, kDebugGraphics, "Drawing sprite %d of bank %d at %d,%d%s%s", index,
-	       _game->getCurBankNum(), x, y, withBlack ? ", opaque" : "", onSubtitle ? ", on the subtitles" : "");
+	// Whatever does not change is drawn again every pass round the loop, so
+	// keep to what is new: the same sprite in the same place says nothing twice
+	if (index != _tracedSpriteIndex || x != _tracedSpriteX || y != _tracedSpriteY ||
+	    _game->getCurBankNum() != _tracedSpriteBank) {
+		_tracedSpriteIndex = index;
+		_tracedSpriteBank = _game->getCurBankNum();
+		_tracedSpriteX = x;
+		_tracedSpriteY = y;
+		debugC(4, kDebugGraphics, "Drawing sprite %d of bank %d at %d,%d%s%s", index,
+		       _game->getCurBankNum(), x, y, withBlack ? ", opaque" : "", onSubtitle ? ", on the subtitles" : "");
+	}
 	uint16 width = (!onSubtitle) ? 640 : _subtitlesXWidth;
 	byte *pix = _game->getBankData();
 	byte *buf = (!onSubtitle) ? _mainViewBuf : _subtitlesViewBuf;
