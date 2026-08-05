@@ -835,6 +835,13 @@ void EdenGraphics::displayRoom() {
 	_game->_globals->_displayFlags = DisplayFlags::dfFlag1;
 	_game->_globals->_roomBaseX = 0;
 	_game->_globals->_roomBackgroundBankNum = room->_backgroundBankNum;
+	// The original reads one bank for the picture whichever way it goes about
+	// drawing it, and that is the room image bank, not the room's own: afsalle
+	// picks it up before it looks at the flags at all. Say what both hold.
+	debugC(1, kDebugGraphics, "Room 0x%X: flags 0x%02X, image bank %d, room bank %d, background %d",
+	       _game->_globals->_roomNum, room->_flags, _game->_globals->_roomImgBank,
+	       room->_bank, room->_backgroundBankNum);
+
 	if (room->_flags & RoomFlags::rf08) {
 		_game->_globals->_displayFlags |= DisplayFlags::dfFlag80;
 		if (room->_flags & RoomFlags::rfPanable) {
