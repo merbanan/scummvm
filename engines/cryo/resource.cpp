@@ -207,6 +207,13 @@ int EdenGame::loadSound(uint16 num) {
 	PakHeaderItem *file = &_bigfileHeader->_files[resNum];
 	int32 size = file->_size;
 	int32 offs = file->_offs;
+	// A line the demo doesn't carry leaves an empty entry behind. The VOC header
+	// was read in before anything looked at the length, which put twenty six
+	// bytes into a buffer that had been asked for none of them.
+	if (size <= 0) {
+		warning("Sound %d is not in this release of the game", num);
+		return 0;
+	}
 	debug("* Loading sound %d (%s) at 0x%X, %d bytes", num, file->_name.c_str(), (uint)offs, size);
 	free(_voiceSamplesBuffer);
 	_voiceSamplesBuffer = (byte *)malloc(size);
@@ -499,6 +506,14 @@ void EdenGame::loadpartoffile(uint16 num, void *buffer, int32 pos, int32 len) {
 	assert(num < _bigfileHeader->_count);
 	PakHeaderItem *file = &_bigfileHeader->_files[num];
 	int32 offs = READ_LE_UINT32(&file->_offs);
+	// The demo keeps an entry for everything the full game has, and leaves the
+	// ones it doesn't ship empty: no length and no offset either, so reading one
+	// used to hand back the head of the resource file itself.
+	if (file->_size <= 0 || pos + len > file->_size) {
+		warning("Resource %d holds no %d bytes at %d", num, len, pos);
+		memset(buffer, 0, len);
+		return;
+	}
 	debug("* Loading partial resource %d (%s) at 0x%X(+0x%X), %d bytes", num, file->_name.c_str(), offs, pos, len);
 	_bigfile.seek(offs + pos, SEEK_SET);
 	_bigfile.read(buffer, len);

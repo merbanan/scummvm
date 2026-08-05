@@ -4894,7 +4894,10 @@ void EdenGame::persovox() {
 	volumeLeft = _globals->_prefVoiceVol[0];
 	volumeRight = _globals->_prefVoiceVol[1];
 	_voiceChannel->setVolume(volumeLeft, volumeRight);
-	_voiceChannel->queueBuffer(_voiceSamplesBuffer, _voiceSamplesSize, true);
+	// A release which doesn't carry this line leaves nothing to play, but the
+	// line is still on screen to be read and clicked away
+	if (_voiceSamplesSize > 0)
+		_voiceChannel->queueBuffer(_voiceSamplesBuffer, _voiceSamplesSize, true);
 	_personTalking = true;
 	_musicFadeFlag = 0;
 	_lastAnimTicks = _vm->_timerTicks;
