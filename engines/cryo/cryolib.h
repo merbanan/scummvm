@@ -60,11 +60,6 @@ public:
 	int16    _pitch;
 	BlitView _normal;
 	BlitView _zoom;
-	/**
-	 * Whether the picture is shown at twice the size, from the corner _zoom
-	 * names. A character stands against its background that way.
-	 */
-	bool     _zoomed;
 };
 
 struct color3_t {

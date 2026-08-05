@@ -2008,8 +2008,6 @@ void EdenGame::fin_perso() {
 	_globals->_curCharacterAnimPtr = nullptr;
 	_globals->_varCA = 0;
 	_globals->_characterImageBank = -1;
-	// The magnified picture belongs to the character which has just left
-	_graphics->getMainView()->_zoomed = false;
 	AnimEndCharacter();
 }
 
@@ -2078,12 +2076,10 @@ void EdenGame::displayBackgroundFollower() {
 				bank = 327;
 			useBank(bank + _globals->_roomBackgroundBankNum);
 			_graphics->drawSprite(0, 0, 16, true);
-			// A background serves several characters, each standing against a
-			// different corner of it, magnified to fill the picture. The corner
-			// is the pair of values the follower carries for it.
-			_graphics->getMainView()->_zoom._srcLeft = follower->_zoomX;
-			_graphics->getMainView()->_zoom._srcTop = follower->_zoomY;
-			_graphics->getMainView()->_zoomed = true;
+			// One background stands behind several characters, each against a
+			// corner of its own, blown up to fill the picture. The corner is the
+			// pair of values the follower carries for it.
+			_graphics->zoomBackground(follower->_zoomX, follower->_zoomY);
 			break;
 		}
 	}
@@ -2111,8 +2107,6 @@ int16 EdenGame::getGameIconY(int16 index) {
 void EdenGame::displayCharacterBackground1() {
 	byte bank;
 	char *ptab;
-	// Only a character which has a corner of its own is shown magnified
-	_graphics->getMainView()->_zoomed = false;
 	if (_globals->_characterPtr == &_persons[PER_ELOI]) {
 		_gameIcons[0].sx = 0;
 		_characterRects[PER_ELOI].left = 2;
