@@ -49,6 +49,17 @@ class HNM6Decoder;
 namespace Video {
 
 /**
+ * Whether a chunk holds sound. The Macintosh release re-encoded some of its
+ * movies as HNM4 while keeping the lowercase tag the older format used.
+ */
+inline bool isHNMSoundChunk(uint16 chunkType) {
+	return chunkType == MKTAG16('S', 'D') ||
+	       chunkType == MKTAG16('s', 'd') ||
+	       chunkType == MKTAG16('A', 'A') ||
+	       chunkType == MKTAG16('B', 'B');
+}
+
+/**
  * Decoder for HNM videos.
  *
  * Video decoder used in engines:
@@ -220,7 +231,13 @@ private:
 	 */
 	class PCMAudioTrack : public HNMAudioTrack {
 	public:
-		PCMAudioTrack(uint sampleRate, bool is16bits, Audio::Mixer::SoundType soundType);
+		/**
+		 * @p samplesPerChunk, when given, is how many samples a sound chunk
+		 * really holds: some are padded out past that and the padding is not
+		 * silence, so playing it clicks.
+		 */
+		PCMAudioTrack(uint sampleRate, bool is16bits, Audio::Mixer::SoundType soundType,
+		              uint32 samplesPerChunk = 0);
 		~PCMAudioTrack() override;
 
 		uint32 decodeSound(uint16 chunkType, byte *data, uint32 size) override;
@@ -231,6 +248,44 @@ private:
 		Audio::QueuingAudioStream *_audioStream;
 		byte _bufferFlags;
 		byte _silenceValue;
+		uint _bytesPerSample;
+		uint32 _samplesPerChunk;
+	};
+
+	/**
+	 * A VOC file sliced across the frames, which is how some of the Macintosh
+	 * release's movies carry their sound. The slices arrive a frame at a time,
+	 * so the container is picked apart as it goes instead of being gathered up.
+	 */
+	class VOCAudioTrack : public HNMAudioTrack {
+	public:
+		VOCAudioTrack(uint sampleRate, Audio::Mixer::SoundType soundType);
+		~VOCAudioTrack() override;
+
+		uint32 decodeSound(uint16 chunkType, byte *data, uint32 size) override;
+	protected:
+		Audio::AudioStream *getAudioStream() const override { return _audioStream; }
+	private:
+		/** Hand whole samples to the mixer, and say how many there were. */
+		uint32 queueSamples(const byte *data, uint32 size);
+
+		enum ParseState {
+			kFileHeader,	///< The twenty six bytes a VOC file opens with
+			kBlockHeader,	///< A type byte and a three byte length
+			kSoundHeader,	///< The rate and codec a type 1 block carries
+			kNewSoundHeader,///< The longer header a type 9 block carries
+			kBlockData,		///< Samples, which go to the mixer
+			kBlockSkip,		///< A block holding something else
+			kFinished
+		};
+
+		Audio::QueuingAudioStream *_audioStream;
+		ParseState _state;
+		byte _header[16];	///< Where a header is gathered while it arrives
+		uint32 _headerLen;
+		uint32 _want;		///< How much of that header is still to come
+		uint32 _left;		///< Bytes still to come of the block being read
+		byte _bufferFlags;
 		uint _bytesPerSample;
 	};
 
@@ -249,12 +304,6 @@ private:
 
 	/** How many frames to demux ahead of the one being shown. */
 	static const uint kDemuxReadAhead = 8;
-
-	static bool isSoundChunk(uint16 chunkType) {
-		return chunkType == MKTAG16('S', 'D') ||
-		       chunkType == MKTAG16('A', 'A') ||
-		       chunkType == MKTAG16('B', 'B');
-	}
 
 	/**
 	 * A frame read from the container: its chunks as they were stored, plus how
