@@ -83,6 +83,7 @@ void View::initDatas(int w, int h, void *buffer) {
 	_zoom._dstTop = 0;
 	_zoom._width = w;
 	_zoom._height = h;
+	_zoomed = false;
 }
 
 // Original name: CLView_CenterIn
@@ -215,10 +216,52 @@ void CLBlitter_CopyView2ViewSimpleSize(byte *src, int16 srcw, int16 srcp, int16 
 	}
 }
 
+// The picture sits between the two friezes, and only it is ever magnified
+static const int16 kPictureTop = 16;
+static const int16 kPictureBottom = 176;
+
+/**
+ * Show the picture at twice the size, from the corner the view's zoom names,
+ * and leave the friezes above and below it alone. This is how the original
+ * frames a character: the follower it belongs to says which corner to take,
+ * so the same background serves several of them.
+ */
+static void copyView2ScreenZoomed(View *view, View *dest) {
+	int16 srcpitch = view->_pitch;
+	int16 dstpitch = dest->_pitch;
+	int16 width = dest->_normal._width;
+	int16 height = dest->_normal._height;
+
+	for (int16 y = 0; y < height; y++) {
+		int16 srcy;
+		if (y < kPictureTop || y >= kPictureBottom)
+			srcy = view->_normal._srcTop + y;
+		else
+			srcy = view->_zoom._srcTop + (y - kPictureTop) / 2;
+		srcy = CLIP<int16>(srcy, 0, view->_height - 1);
+
+		const byte *src = view->_bufferPtr + srcy * srcpitch;
+		byte *dst = dest->_bufferPtr + (dest->_normal._dstTop + y) * dstpitch + dest->_normal._dstLeft;
+		for (int16 x = 0; x < width; x++) {
+			int16 srcx;
+			if (y < kPictureTop || y >= kPictureBottom)
+				srcx = view->_normal._srcLeft + x;
+			else
+				srcx = view->_zoom._srcLeft + x / 2;
+			dst[x] = src[CLIP<int16>(srcx, 0, view->_width - 1)];
+		}
+	}
+}
+
 void CLBlitter_CopyView2ScreenCUSTOM(View *view) {
 	View *dest = g_ed->_screenView;
 	int16 srcpitch = view->_pitch;
 	int16 dstpitch = dest->_pitch;
+
+	if (view->_zoomed) {
+		copyView2ScreenZoomed(view, dest);
+		return;
+	}
 
 	CLBlitter_CopyView2ViewSimpleSize(view->_bufferPtr + view->_normal._srcTop * srcpitch + view->_normal._srcLeft,
 									  view->_normal._width, srcpitch, view->_normal._height,
