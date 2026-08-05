@@ -6577,8 +6577,12 @@ void EdenGame::getSaveStateName(char *dest, int size, int16 slot) {
  * goes on to start the loaded one.
  */
 bool EdenGame::loadGameFromSlot(int16 slot) {
-	if (slot < 0 || slot >= kNumSaveSlots) {
-		warning("Lost Eden keeps %d saved games, so there is no slot %d", kNumSaveSlots, slot);
+	// The panel writes to three of them and offers four to read back, but a
+	// slot named on the command line is bounded by what is on disc rather than
+	// by what the panel has room to list: a saved game which is there can be
+	// read whatever its number.
+	if (slot < 0) {
+		warning("There is no saved game %d", slot);
 		return false;
 	}
 
