@@ -1276,9 +1276,17 @@ void EdenGraphics::showMovie(int16 num, char arg1) {
 		}
 		_hnmFrameNum = decoder->getCurFrame();
 
-		if (_game->getSpecialTextMode())
-			handleHNMSubtitles();
-		else
+		// A movie changes its subtitle at given frames, and the dialog scan which
+		// picks the line marks that line as said and steps the dialog on. This
+		// loop runs many times over for one frame, so asking on every pass ate a
+		// line each time: the captions the rest of the movie still needed were
+		// spoken and struck off before their frame came round, and since the
+		// dialogs are part of a saved game the damage outlived the movie. Ask
+		// only when a frame has actually been decoded.
+		if (_game->getSpecialTextMode()) {
+			if (newFrame)
+				handleHNMSubtitles();
+		} else
 			_game->musicspy();
 
 		// Only send a frame to the screen when there is a new one: the scaling
