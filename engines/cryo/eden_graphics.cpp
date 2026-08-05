@@ -833,14 +833,9 @@ void EdenGraphics::displayRoom() {
 			_game->_globals->_varF4 = 0;
 			rundcurs();
 			_game->saveFriezes();
-			// The two halves of a panable room come from the background's own
-			// number, not the room's bank: 326 for the left of it and 327 for
-			// the right, which is the pair a character is shown against too.
-			// Taking the room's bank instead landed on whichever character
-			// happened to be numbered there, and left the picture unpainted.
-			_game->useBank(326 + _game->_globals->_roomBackgroundBankNum);
+			_game->useBank(room->_bank - 1);
 			drawSprite(0, 0, 16, true);
-			_game->useBank(327 + _game->_globals->_roomBackgroundBankNum);
+			_game->useBank(room->_bank);
 			drawSprite(0, 320, 16, true);
 			displaySingleRoom(room);
 			_game->_globals->_roomBaseX = 320;
