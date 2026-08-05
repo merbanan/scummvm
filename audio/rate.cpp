@@ -108,27 +108,26 @@ private:
 	template<typename st_sample_t, MixMode mixMode>
 	int convertForType(AudioStream &input, byte *outBuffer, st_size_t numSamples, st_volume_t volL, st_volume_t volR);
 
-	// keep a single printConvertType shared across all RateConverter_Impl specializations.
-	// PrintContext must be trivially destructible: it lives in a function-scope static and
-	// is torn down after the OSystem (and its memory pool that backs Common::String) is gone.
-	struct PrintContext {
-		st_rate_t previousInRate = 0;
-		char previousGameId[64] = { 0 };
-	};
-	void printConvertType(const char *name, PrintContext &ctx) const {
+	// Which conversion the rates call for does not change while samples are
+	// moving, so each converter says what it is doing once and the conversion
+	// itself is left alone. This used to ask the configuration manager for the
+	// game's name and compare it on every buffer, keeping the last rate it had
+	// spoken of in a static shared by every converter: a game playing one
+	// stream at 11025Hz against another at 22050Hz undid that check between
+	// them, and the pair of them filled the log.
+	bool _convertTypePrinted = false;
+
+	void printConvertType(const char *name) {
+		if (_convertTypePrinted)
+			return;
+		_convertTypePrinted = true;
+
 		const Common::String &activeDomain = ConfMan.getActiveDomainName();
-		if (!activeDomain.empty() &&
-			(ctx.previousInRate != _inRate ||
-			 strncmp(ctx.previousGameId, activeDomain.c_str(), sizeof(ctx.previousGameId)) != 0)) {
-			ctx.previousInRate = _inRate;
-			Common::strlcpy(ctx.previousGameId, activeDomain.c_str(), sizeof(ctx.previousGameId));
-			debugC(kDebugLevelGAudio, "RateConverter_Impl::%s[%s]: inRate %d Hz (%s) => outRate %d Hz (%s)",
-				  name, activeDomain.c_str(),
-				  _inRate, inStereo ? "stereo" : "mono", _outRate, outStereo ? "stereo" : "mono");
-		}
+		debugC(kDebugLevelGAudio, "RateConverter_Impl::%s[%s]: inRate %d Hz (%s) => outRate %d Hz (%s)",
+			  name, activeDomain.c_str(),
+			  _inRate, inStereo ? "stereo" : "mono", _outRate, outStereo ? "stereo" : "mono");
 	}
-	#define PRINT_OUTPUT_RATE \
-		do { static PrintContext _ctx; printConvertType(__FUNCTION__, _ctx); } while (0)
+	#define PRINT_OUTPUT_RATE printConvertType(__FUNCTION__)
 
 public:
 	RateConverter_Impl(st_rate_t inputRate, st_rate_t outputRate);
@@ -136,8 +135,8 @@ public:
 
 	int convert(AudioStream &input, byte *outBuffer, uint outBytesPerSample, st_size_t numSamples, st_volume_t vol_l, st_volume_t vol_r, MixMode mixMode) override;
 
-	void setInputRate(st_rate_t inputRate) override { _inRate = inputRate; _pendingRepeats = 0; }
-	void setOutputRate(st_rate_t outputRate) override { _outRate = outputRate; _pendingRepeats = 0; }
+	void setInputRate(st_rate_t inputRate) override { _inRate = inputRate; _pendingRepeats = 0; _convertTypePrinted = false; }
+	void setOutputRate(st_rate_t outputRate) override { _outRate = outputRate; _pendingRepeats = 0; _convertTypePrinted = false; }
 
 	st_rate_t getInputRate() const override { return _inRate; }
 	st_rate_t getOutputRate() const override { return _outRate; }
