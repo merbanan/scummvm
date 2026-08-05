@@ -24,6 +24,7 @@
 #include "cryo/cryolib.h"
 #include "cryo/eden.h"
 #include "cryo/eden_graphics.h"
+#include "cryo/detection.h"
 
 #include "common/file.h"
 
@@ -128,6 +129,8 @@ void EdenGraphics::readPalette(byte *ptr) {
 
 // Original name: noclipax
 void EdenGraphics::drawSprite(int16 index, int16 x, int16 y, bool withBlack, bool onSubtitle) {
+	debugC(4, kDebugGraphics, "Drawing sprite %d of bank %d at %d,%d%s%s", index,
+	       _game->getCurBankNum(), x, y, withBlack ? ", opaque" : "", onSubtitle ? ", on the subtitles" : "");
 	uint16 width = (!onSubtitle) ? 640 : _subtitlesXWidth;
 	byte *pix = _game->getBankData();
 	byte *buf = (!onSubtitle) ? _mainViewBuf : _subtitlesViewBuf;
@@ -691,6 +694,9 @@ void EdenGraphics::zoomBackground(int16 srcX, int16 srcY) {
 	const int16 srcWidth = 320 / 2;
 	const int16 srcHeight = 160 / 2;
 
+	debugC(1, kDebugGraphics, "Blowing up the background from %d,%d (room 0x%X, display flags 0x%02X)",
+	       srcX, srcY, _game->_globals->_roomNum, _game->_globals->_displayFlags);
+
 	srcX = CLIP<int16>(srcX, 0, 320 - srcWidth);
 	srcY = CLIP<int16>(srcY, 0, 160 - srcHeight);
 
@@ -743,7 +749,7 @@ void EdenGraphics::displaySingleRoom(Room *room) {
 						addIcon = true;
 				}
 				else if (b0 >= 100) {
-					debug("add object %d", b0 - 100);
+					debugC(3, kDebugGraphics, "Room 0x%X: object %d lies here", _game->_globals->_roomNum, b0 - 100);
 					if (_game->isObjectHere(b0 - 100)) {
 						addIcon = true;
 						_game->_globals->_varF7 = 1;
@@ -765,7 +771,7 @@ void EdenGraphics::displaySingleRoom(Room *room) {
 					ptr += 2;
 					x += _game->_globals->_roomBaseX;
 					ex += _game->_globals->_roomBaseX;
-					debug("add hotspot at %3d:%3d - %3d:%3d, action = %d", x, y, ex, ey, b0);
+					debugC(3, kDebugGraphics, "Room 0x%X: hotspot %3d:%3d - %3d:%3d, action %d", _game->_globals->_roomNum, x, y, ex, ey, b0);
 
 					if (_game->_vm->_showHotspots) {
 						for (int iii = x; iii < ex; iii++)
@@ -841,7 +847,7 @@ void EdenGraphics::displayRoom() {
 	}
 	else {
 		//TODO: roomImgBank is garbage here!
-		debug("displayRoom: room 0x%X using bank %d", _game->_globals->_roomNum, _game->_globals->_roomImgBank);
+		debugC(1, kDebugGraphics, "Displaying room 0x%X from bank %d", _game->_globals->_roomNum, _game->_globals->_roomImgBank);
 		_game->useBank(_game->_globals->_roomImgBank);
 		displaySingleRoom(room);
 		assert(_game->_vm->_screenView->_pitch == 320);
@@ -1232,7 +1238,7 @@ void EdenGraphics::effetpix() {
 void EdenGraphics::showMovie(int16 num, char arg1) {
 	Common::SeekableReadStream *stream = _game->loadSubStream(num - 1 + 485);
 	if (!stream) {
-		warning("Could not load movie %d", num);
+		warning("Could not load movie %d (resource %d)", num, num - 1 + 485);
 		return;
 	}
 
@@ -1260,7 +1266,7 @@ void EdenGraphics::showMovie(int16 num, char arg1) {
 			// non-video resources (VOC audio) under the same numbering and
 			// aren't played back at all yet; this isn't worth alarming
 			// players with, but still worth a debug-level breadcrumb.
-			debug("Could not load movie %d", num);
+			debugC(1, kDebugMovie, "Movie %d (resource %d) is in no format we decode", num, num - 1 + 485);
 			delete decoder;
 			return;
 		}

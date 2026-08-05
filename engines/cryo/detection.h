@@ -22,7 +22,16 @@
 #ifndef CRYO_DETECTION_H
 #define CRYO_DETECTION_H
 
+#include "common/debug.h"
+
 namespace Cryo {
+
+enum CryoDebugChannels {
+	kDebugResource = 1,	///< What is read out of the game's own files
+	kDebugGraphics,		///< Rooms, sprites and the pictures behind them
+	kDebugScript,		///< Conditions, dialogs and the turns the game takes
+	kDebugMovie			///< Movies and the subtitles which caption them
+};
 
 enum CryoGameFlags {
 	/**
