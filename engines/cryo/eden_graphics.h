@@ -37,6 +37,7 @@ public:
 	// Original name: noclipax
 	void drawSprite(int16 index, int16 x, int16 y, bool withBlack = false, bool onSubtitle = false);
 	void zoomBackground(int16 srcX, int16 srcY);
+	void playRoomVideo(int16 num);
 
 	// Original name: af_subtitle
 	void displaySubtitles();

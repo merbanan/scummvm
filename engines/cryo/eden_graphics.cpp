@@ -724,6 +724,79 @@ void EdenGraphics::zoomBackground(int16 srcX, int16 srcY) {
 	delete[] corner;
 }
 
+// The picture sits between the two friezes
+static const int16 kPictureTop = 16;
+static const int16 kPictureHeight = 160;
+
+/**
+ * Play the movie a room takes its picture from, into the room's own view, so
+ * that whatever the room draws afterwards lands on top of the frame it leaves.
+ *
+ * A room flagged rf08 has no bank to be drawn from: the number it carries is a
+ * movie, and afsalle plays it here for every such room, whether it scrolls or
+ * not. The Macintosh release has banks in their place and never comes this way.
+ */
+void EdenGraphics::playRoomVideo(int16 num) {
+	const uint16 resNum = num - 1 + 485;
+	Common::SeekableReadStream *stream = _game->loadSubStream(resNum);
+	if (!stream)
+		return;
+
+	Video::VideoDecoder *decoder = new Video::HNMDecoder(g_system->getScreenFormat());
+	if (!decoder->loadStream(stream)) {
+		// The valleys are of the older untagged kind. loadStream() takes the
+		// stream over either way, so the second attempt needs one of its own.
+		delete decoder;
+		stream = _game->loadSubStream(resNum);
+		decoder = new HNM1Decoder();
+		if (!stream || !decoder->loadStream(stream)) {
+			debugC(1, kDebugMovie, "Room movie %d (resource %d) is in no format we decode", num, resNum);
+			delete decoder;
+			return;
+		}
+	}
+
+	debugC(1, kDebugMovie, "Room movie %d (resource %d), %d frames of %dx%d",
+	       num, resNum, decoder->getFrameCount(), decoder->getWidth(), decoder->getHeight());
+
+	decoder->start();
+	while (!_game->_vm->shouldQuit() && !decoder->endOfVideo()) {
+		if (!decoder->needsUpdate()) {
+			_game->_vm->pollEvents(CLIP<uint32>(decoder->getTimeToNextFrame(), 1, 10));
+			continue;
+		}
+
+		// The frames come two to a picture: the even ones are its left half and
+		// the odd ones its right, and they join without a seam. A room which
+		// scrolls is that picture, both halves of it, which is why afsalle asks
+		// the decoder twice for one. A room which does not takes the left half
+		// alone, that being all of it there is room for.
+		const int curFrame = decoder->getCurFrame() + 1;
+		const int16 dstX = (curFrame & 1) ? 320 : 0;
+
+		const Graphics::Surface *frame = decoder->decodeNextFrame();
+		if (frame) {
+			const int16 w = MIN<int16>(frame->w, 320);
+			const int16 h = MIN<int16>(frame->h, kPictureHeight);
+			for (int16 y = 0; y < h; y++)
+				memcpy(_mainViewBuf + (kPictureTop + y) * 640 + dstX, frame->getBasePtr(0, y), w);
+		}
+		if (decoder->hasDirtyPalette()) {
+			const byte *framePalette = decoder->getPalette();
+			color_t palette[256];
+			for (int i = 0; i < 256; i++) {
+				palette[i].r = framePalette[i * 3 + 0] << 8;
+				palette[i].g = framePalette[i * 3 + 1] << 8;
+				palette[i].b = framePalette[i * 3 + 2] << 8;
+			}
+			CLBlitter_Send2ScreenNextCopy(palette, 0, 256);
+		}
+		CLBlitter_CopyView2Screen(_mainView);
+	}
+
+	delete decoder;
+}
+
 // Original name afsalle1
 void EdenGraphics::displaySingleRoom(Room *room) {
 	byte *ptr = (byte *)getElem(_game->getPlaceRawBuf(), room->_id - 1);
@@ -842,57 +915,44 @@ void EdenGraphics::displayRoom() {
 	       _game->_globals->_roomNum, room->_flags, _game->_globals->_roomImgBank,
 	       room->_bank, room->_backgroundBankNum);
 
+	// A room flagged rf08 has no bank to be drawn from: the number it carries
+	// is a movie, and afsalle plays it for every such room, scrolling or not.
+	// The valleys are the six of them, one apiece, and they are animations
+	// rather than pictures - GAAT.HNM holds thirty two complete 320 by 160
+	// frames of Chamaar, which run for a few before Eloi is spoken to and again
+	// once Dina has been:
+	//
+	//     Chamaar    17 -> GAAT.HNM     Tamara     43 -> TAMA.HNM
+	//     Uluru      41 -> TUNA.HNM     Cantura    44 -> CONT.HNM
+	//     Koto       42 -> KOTO.HNM     Shandovra  45 -> HAND.HNM
+	//
+	// The Macintosh release has none of them: it cut each into a pair of banks
+	// and pointed its room table at those instead, so its afsalle loads a bank
+	// either side of the room's own. Following that release here left the DOS
+	// one loading MAGUS and MIRAN, two characters, for a valley.
 	if (room->_flags & RoomFlags::rf08) {
 		_game->_globals->_displayFlags |= DisplayFlags::dfFlag80;
 		if (room->_flags & RoomFlags::rfPanable) {
-			// Scrollable room on 2 screens.
-			//
-			// The two halves either side of the room's bank are the Macintosh
-			// way of it, and this follows that release: its .afsalle loads the
-			// bank below and the bank itself and draws them at 0,16 and 320,16,
-			// and its room table points a valley at a pair which is there for
-			// the purpose - Chamaar asks for 2474, and 2473 and 2474 are
-			// GAAT0000 and GAAT0001, the two halves of it.
-			//
-			// The DOS release has no such pair, and asks for no bank at all: the
-			// number is a movie there. Its afsalle hands it to the image decoder
-			// rather than loading it, because 17 is the seventeenth movie, and
-			// the six valleys line up one apiece with the six the Macintosh cut
-			// into halves:
-			//
-			//     Chamaar    17 -> GAAT.HNM     Tamara     43 -> TAMA.HNM
-			//     Uluru      41 -> TUNA.HNM     Cantura    44 -> CONT.HNM
-			//     Koto       42 -> KOTO.HNM     Shandovra  45 -> HAND.HNM
-			//
-			// They are of the older untagged kind, which HNM1Decoder reads, and
-			// they are animations rather than pictures: GAAT.HNM holds thirty
-			// two complete 320 by 160 frames of the valley. It runs for a few of
-			// them before Eloi is spoken to, and runs again once Dina has been.
-			// That is why afsalle calls into the decoder twice - the first call
-			// opens it and takes a frame, which is all a room that does not
-			// scroll wants, and the second is the loop which plays it.
-			//
-			// So a valley wants room->_bank played as a movie, not loaded as a
-			// bank. Taken as a bank it lands on MAGUS and MIRAN, two characters,
-			// and the valley comes out as a 21 by 9 blob beside one of them.
+			// Scrollable room on 2 screens
 			_game->_globals->_displayFlags |= DisplayFlags::dfPanable;
 			_game->_globals->_varF4 = 0;
 			rundcurs();
 			_game->saveFriezes();
-			_game->useBank(room->_bank - 1);
-			drawSprite(0, 0, 16, true);
-			_game->useBank(room->_bank);
-			drawSprite(0, 320, 16, true);
-			displaySingleRoom(room);
+		}
+
+		// Whether it scrolls or not, the picture is the movie
+		playRoomVideo(_game->_globals->_roomImgBank);
+
+		displaySingleRoom(room);
+		if (room->_flags & RoomFlags::rfPanable) {
 			_game->_globals->_roomBaseX = 320;
 			if ((room + 1)->_bank != 65535)
 				displaySingleRoom(room + 1);
 		}
-		else
-			displaySingleRoom(room);
 	}
 	else {
-		//TODO: roomImgBank is garbage here!
+		// Not garbage, whatever the note here used to say: afsalle reads this
+		// very number, and passes it to the player above when the room is one
 		debugC(1, kDebugGraphics, "Displaying room 0x%X from bank %d", _game->_globals->_roomNum, _game->_globals->_roomImgBank);
 		_game->useBank(_game->_globals->_roomImgBank);
 		displaySingleRoom(room);
