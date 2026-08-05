@@ -769,12 +769,13 @@ bool HNM1Decoder::HNM1VideoTrack::decodeImage(const byte *chunk, uint32 size) {
 
 	if (mode == 0xFF) {
 		// A strip, which the movies pair with the complete pictures they stage
-		// off screen. It says where it goes in the four bytes it keeps unpacked
-		// at the head of the buffer, and the zeroes in it are left alone so that
-		// what is already there shows through. Without those bytes there is
-		// nothing to go on but the middle of the frame.
-		uint16 left = (kWidth - width) / 2;
-		uint16 top = (_height - height) / 2;
+		// off screen. The zeroes in it are left alone so that what is already
+		// there shows through, and where it goes is in the four bytes it keeps
+		// unpacked at the head of the buffer, two words giving left and top. A
+		// strip without them goes at the origin: the credits are built that way,
+		// out of strips as wide as the frame.
+		uint16 left = 0;
+		uint16 top = 0;
 		if (plainBytes == 4) {
 			left = READ_LE_UINT16(_decodeBuffer);
 			top = READ_LE_UINT16(_decodeBuffer + 2);
