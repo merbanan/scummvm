@@ -58,6 +58,10 @@ public:
 	// How many buffers in queue (including currently playing one)
 	unsigned int numQueued();
 
+	// Take the samples to come at a new rate. Anything still queued is at the
+	// old rate, so it is stopped rather than played too fast or too slow.
+	void setSampleRate(unsigned int sampleRate);
+
 	// Volume control
 	int _volumeLeft, _volumeRight;
 	unsigned int getVolume();

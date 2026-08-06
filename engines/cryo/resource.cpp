@@ -230,31 +230,47 @@ int EdenGame::loadSound(uint16 num) {
 		// 1. Standard VOC header
 		_bigfile.read(_voiceSamplesBuffer, 0x1A);
 
-		// 2. Lipsync?
-		unsigned char chunkType = _bigfile.readByte();
+		// 2. The chunks the file is made of, which the header is followed by. A
+		// lipsync chunk comes first where there is one, and then the samples in
+		// one sound chunk or, for sixteen of the voices, in several of them. Only
+		// the first was taken in before, which cut those voices short.
+		int32 samplesRead = 0;
+		int32 bytesLeft = size - 0x1A;
 
-		uint32 val = 0;
-		_bigfile.read(&val, 3);
-		unsigned int chunkLen = FROM_LE_32(val);
-
-		if (chunkType == 5) {
-			if (chunkLen > LIPSYNC_DATA_SIZE) {
-				warning("Lipsync chunk too large (%u bytes), truncating to %d", chunkLen, LIPSYNC_DATA_SIZE);
-				_bigfile.read(_gameLipsync + LIPSYNC_ANIM_TABLE_SIZE, LIPSYNC_DATA_SIZE);
-				_bigfile.skip(chunkLen - LIPSYNC_DATA_SIZE);
-			} else
-				_bigfile.read(_gameLipsync + LIPSYNC_ANIM_TABLE_SIZE, chunkLen);
-			chunkType = _bigfile.readByte();
+		while (bytesLeft >= 4) {
+			unsigned char chunkType = _bigfile.readByte();
+			uint32 val = 0;
 			_bigfile.read(&val, 3);
-			chunkLen = FROM_LE_32(val);
+			unsigned int chunkLen = FROM_LE_32(val);
+			bytesLeft -= 4;
+
+			// The terminator, and anything the file is too short to hold
+			if (chunkType == 0 || chunkLen > (uint32)bytesLeft)
+				break;
+			bytesLeft -= chunkLen;
+
+			if (chunkType == 5) {
+				if (chunkLen > LIPSYNC_DATA_SIZE) {
+					warning("Lipsync chunk too large (%u bytes), truncating to %d", chunkLen, LIPSYNC_DATA_SIZE);
+					_bigfile.read(_gameLipsync + LIPSYNC_ANIM_TABLE_SIZE, LIPSYNC_DATA_SIZE);
+					_bigfile.skip(chunkLen - LIPSYNC_DATA_SIZE);
+				} else
+					_bigfile.read(_gameLipsync + LIPSYNC_ANIM_TABLE_SIZE, chunkLen);
+			} else if (chunkType == 1 && chunkLen >= 2) {
+				// A sound chunk opens with the rate the samples were taken at,
+				// given as the divisor the DOS driver loaded its timer with, and
+				// the way they are packed
+				byte timeConstant = _bigfile.readByte();
+				_bigfile.readByte();
+				if (!samplesRead)
+					_voiceSampleRate = 1000000 / (256 - timeConstant);
+				_bigfile.read(_voiceSamplesBuffer + samplesRead, chunkLen - 2);
+				samplesRead += chunkLen - 2;
+			} else
+				_bigfile.skip(chunkLen);
 		}
 
-		// 3. Normal sound data
-		if (chunkType == 1) {
-			_bigfile.readUint16LE();
-			size = chunkLen - 2;
-			_bigfile.read(_voiceSamplesBuffer, size);
-		}
+		size = samplesRead;
 	}
 
 	return size;
