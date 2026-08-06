@@ -36,6 +36,77 @@
 
 namespace Video {
 
+// A VOC file opens with twenty six bytes, and each of its blocks with a type
+// byte and a three byte length
+static const uint32 kVocHeaderSize = 26;
+static const uint32 kVocBlockHeaderSize = 4;
+
+// Sound variants, as found in the second byte of an HNM4 header
+enum {
+	kSoundVariantDPCM = 1,	// The usual one: a delta lookup table then indices into it
+	kSoundVariantPCM  = 3	// Raw samples, used by the Macintosh release of Lost Eden
+};
+
+// Raw sound chunk flags. The sample size is only here, not in the file header:
+// Lost Eden's CRYO8/INTRO8 and CRYO16/INTRO16 have identical headers.
+enum {
+	kPCMFlags8Bits  = 0x7A00,	// 882 bytes, i.e. 80ms, per frame: 11025Hz
+	kPCMFlags16Bits = 0xD000	// 3528 bytes, i.e. 80ms, per frame: 22050Hz
+};
+
+/**
+ * Look at the first sound chunk without disturbing @p stream, reporting its tag,
+ * its flags and the head of what it holds. Only chunk headers are read on the
+ * way there, so this stays cheap even on long movies. Sound doesn't have to
+ * start with the first frame, hence the generous bound.
+ */
+static bool peekSoundChunk(Common::SeekableReadStream *stream, uint16 &soundTag,
+                           uint16 &soundFlags, byte *head, uint32 headSize) {
+	const uint kMaxFramesScanned = 1024;
+	int64 startPos = stream->pos();
+	bool found = false;
+
+	for (uint frame = 0; frame < kMaxFramesScanned && !found; frame++) {
+		uint32 superchunkRemaining = stream->readUint32LE();
+		if (stream->eos() || !superchunkRemaining) {
+			break;
+		}
+		superchunkRemaining = (superchunkRemaining & 0x00ffffff);
+		if (superchunkRemaining < 4) {
+			break;
+		}
+		superchunkRemaining -= 4;
+
+		while (superchunkRemaining >= 8) {
+			uint32 chunkSize = stream->readUint32LE();
+			uint16 chunkType = stream->readUint16BE();
+			uint16 chunkFlags = stream->readUint16LE();
+			if (stream->eos() || chunkSize < 8 || chunkSize > superchunkRemaining) {
+				// Bogus data: give up rather than resynchronize on garbage
+				superchunkRemaining = 0;
+				frame = kMaxFramesScanned;
+				break;
+			}
+			if (isHNMSoundChunk(chunkType)) {
+				soundTag = chunkType;
+				soundFlags = chunkFlags;
+				// Enough of the payload to tell what is inside it
+				uint32 want = MIN(headSize, chunkSize - 8);
+				memset(head, 0, headSize);
+				stream->read(head, want);
+				found = true;
+				break;
+			}
+			stream->skip(chunkSize - 8);
+			superchunkRemaining -= chunkSize;
+		}
+	}
+
+	stream->clearErr();
+	stream->seek(startPos, SEEK_SET);
+	return found;
+}
+
 HNMDecoder::HNMDecoder(const Graphics::PixelFormat &format, bool loop,
                        byte *initialPalette) : _regularFrameDelayMs(uint32(-1)),
 	_videoTrack(nullptr), _audioTrack(nullptr), _stream(nullptr), _format(format),
@@ -71,6 +142,7 @@ bool HNMDecoder::loadStream(Common::SeekableReadStream *stream) {
 	}
 
 	byte audioflags = 0;
+	byte soundVariant = kSoundVariantDPCM;
 	uint16 soundBits = 0, soundFormat = 0;
 	if (tag == MKTAG('H', 'N', 'M', '6')) {
 		//uint16 ukn6_1 = stream->readUint16LE();
@@ -79,8 +151,11 @@ bool HNMDecoder::loadStream(Common::SeekableReadStream *stream) {
 		//byte bpp = stream->readByte();
 		stream->skip(1);
 	} else {
-		//uint32 ukn = stream->readUint32BE();
-		stream->skip(4);
+		//byte ukn = stream->readByte();
+		stream->skip(1);
+		soundVariant = stream->readByte();
+		//uint16 ukn2 = stream->readUint16LE();
+		stream->skip(2);
 	}
 	uint16 width = stream->readUint16LE();
 	uint16 height = stream->readUint16LE();
@@ -133,9 +208,45 @@ bool HNMDecoder::loadStream(Common::SeekableReadStream *stream) {
 			return false;
 		}
 		if (soundFormat == 2 && soundBits != 0) {
-			// HNM4 is Mono 22050Hz
-			_audioTrack = new DPCMAudioTrack(soundFormat, soundBits, 22050, false, getSoundType());
-			audioSampleRate = 22050;
+			// A movie whose header claims sound but carries none is left silent,
+			// paced by the regular frame delay
+			uint16 soundTag = 0, soundChunkFlags = 0;
+			byte soundHead[kVocHeaderSize + kVocBlockHeaderSize + 2];
+			bool haveSound = peekSoundChunk(stream, soundTag, soundChunkFlags,
+			                                soundHead, sizeof(soundHead));
+
+			if (haveSound && soundTag == MKTAG16('s', 'd')) {
+				// Re-encoded by the Macintosh release, keeping the old tag.
+				// Holds either a VOC file sliced across the frames or raw samples.
+				if (!memcmp(soundHead, "Creative Voice File", 19) &&
+				        soundHead[kVocHeaderSize] == 1) {
+					// The rate lives in the first sound block, as a divisor
+					byte divisor = soundHead[kVocHeaderSize + kVocBlockHeaderSize];
+					audioSampleRate = 1000000 / (256 - divisor);
+					_audioTrack = new VOCAudioTrack(audioSampleRate, getSoundType());
+				} else {
+					// A frame's samples per slice, padded to 4 bytes: 882 at
+					// 11025Hz is the 80ms a frame lasts, in 884 bytes
+					audioSampleRate = 11025;
+					_audioTrack = new PCMAudioTrack(audioSampleRate, false, getSoundType(),
+					                                audioSampleRate * _regularFrameDelayMs / 1000);
+				}
+			} else if (haveSound && soundVariant == kSoundVariantPCM) {
+				// Raw samples, whose size only the sound chunks themselves tell
+				bool is16bits = true;
+				if (soundChunkFlags == kPCMFlags8Bits) {
+					is16bits = false;
+				} else if (soundChunkFlags != kPCMFlags16Bits) {
+					warning("Unknown HNM4 raw sound chunk flags 0x%04X, assuming 16 bits",
+					        soundChunkFlags);
+				}
+				audioSampleRate = is16bits ? 22050 : 11025;
+				_audioTrack = new PCMAudioTrack(audioSampleRate, is16bits, getSoundType());
+			} else if (soundVariant != kSoundVariantPCM) {
+				// HNM4 is Mono 22050Hz
+				_audioTrack = new DPCMAudioTrack(soundFormat, soundBits, 22050, false, getSoundType());
+				audioSampleRate = 22050;
+			}
 		}
 		_videoTrack = new HNM4VideoTrack(width, height, frameSize, frameCount,
 		                                 _regularFrameDelayMs, audioSampleRate,
@@ -1243,6 +1354,222 @@ uint32 HNMDecoder::DPCMAudioTrack::decodeSound(uint16 chunkType, byte *data, uin
 
 	_audioStream->queueBuffer((byte *)out, size * sizeof(*out), DisposeAfterUse::YES, flags);
 	return numSamples;
+}
+
+HNMDecoder::PCMAudioTrack::PCMAudioTrack(uint sampleRate, bool is16bits,
+        Audio::Mixer::SoundType soundType, uint32 samplesPerChunk) : HNMAudioTrack(soundType),
+	_audioStream(Audio::makeQueuingAudioStream(sampleRate, false)),
+	_bufferFlags(is16bits ? (Audio::FLAG_16BITS | Audio::FLAG_LITTLE_ENDIAN) : Audio::FLAG_UNSIGNED),
+	// 16 bit samples are signed, 8 bit ones are not
+	_silenceValue(is16bits ? 0x00 : 0x80), _bytesPerSample(is16bits ? 2 : 1),
+	_samplesPerChunk(samplesPerChunk) {
+}
+
+HNMDecoder::PCMAudioTrack::~PCMAudioTrack() {
+	delete _audioStream;
+}
+
+uint32 HNMDecoder::PCMAudioTrack::decodeSound(uint16 chunkType, byte *data, uint32 size) {
+	// Anything past the samples the chunk really holds is padding
+	if (_samplesPerChunk) {
+		size = MIN(size, _samplesPerChunk * _bytesPerSample);
+	}
+
+	// Whole samples only
+	size -= size % _bytesPerSample;
+	if (size == 0) {
+		return 0;
+	}
+
+	// data points into the buffer the demuxer reuses, so the samples need a
+	// place of their own for as long as the mixer holds on to them
+	byte *buffer = (byte *)malloc(size);
+	if (!buffer) {
+		error("Couldn't allocate HNM sound buffer");
+	}
+	memcpy(buffer, data, size);
+	_audioStream->queueBuffer(buffer, size, DisposeAfterUse::YES, _bufferFlags);
+
+	return size / _bytesPerSample;
+}
+
+uint32 HNMDecoder::PCMAudioTrack::queueSilence(uint32 numSamples) {
+	if (!numSamples) {
+		return 0;
+	}
+
+	uint32 size = numSamples * _bytesPerSample;
+	byte *buffer = (byte *)malloc(size);
+	if (!buffer) {
+		error("Couldn't allocate HNM sound buffer");
+	}
+	memset(buffer, _silenceValue, size);
+	_audioStream->queueBuffer(buffer, size, DisposeAfterUse::YES, _bufferFlags);
+
+	return numSamples;
+}
+
+HNMDecoder::VOCAudioTrack::VOCAudioTrack(uint sampleRate,
+        Audio::Mixer::SoundType soundType) : HNMAudioTrack(soundType),
+	_audioStream(Audio::makeQueuingAudioStream(sampleRate, false)),
+	_state(kFileHeader), _headerLen(0), _want(kVocHeaderSize), _left(0),
+	_bufferFlags(Audio::FLAG_UNSIGNED), _bytesPerSample(1) {
+}
+
+HNMDecoder::VOCAudioTrack::~VOCAudioTrack() {
+	delete _audioStream;
+}
+
+uint32 HNMDecoder::VOCAudioTrack::queueSamples(const byte *data, uint32 size) {
+	size -= size % _bytesPerSample;
+	if (!size) {
+		return 0;
+	}
+
+	// data points into the buffer the demuxer reuses, so the samples need a
+	// place of their own for as long as the mixer holds on to them
+	byte *buffer = (byte *)malloc(size);
+	if (!buffer) {
+		error("Couldn't allocate HNM sound buffer");
+	}
+	memcpy(buffer, data, size);
+	_audioStream->queueBuffer(buffer, size, DisposeAfterUse::YES, _bufferFlags);
+
+	return size / _bytesPerSample;
+}
+
+uint32 HNMDecoder::VOCAudioTrack::decodeSound(uint16 chunkType, byte *data, uint32 size) {
+	uint32 samples = 0;
+
+	while (size && _state != kFinished) {
+		if (_state == kBlockData || _state == kBlockSkip) {
+			uint32 take = MIN(size, _left);
+			if (_state == kBlockData) {
+				samples += queueSamples(data, take);
+			}
+			data += take;
+			size -= take;
+			_left -= take;
+			if (!_left) {
+				_state = kBlockHeader;
+				_want = kVocBlockHeaderSize;
+				_headerLen = 0;
+			}
+			continue;
+		}
+
+		// Gather a header, which a slice can end in the middle of
+		uint32 take = MIN(size, _want);
+		if (_headerLen + take > sizeof(_header)) {
+			warning("HNM: VOC header longer than expected, dropping the sound");
+			_state = kFinished;
+			break;
+		}
+		memcpy(_header + _headerLen, data, take);
+		_headerLen += take;
+		data += take;
+		size -= take;
+		_want -= take;
+		if (_want) {
+			break;
+		}
+
+		switch (_state) {
+		case kFileHeader:
+			if (memcmp(_header, "Creative Voice File", 19)) {
+				warning("HNM: sound is not the VOC file it looked like");
+				_state = kFinished;
+				break;
+			}
+			_state = kBlockHeader;
+			_want = kVocBlockHeaderSize;
+			_headerLen = 0;
+			break;
+
+		case kBlockHeader: {
+			uint32 length = _header[1] | (_header[2] << 8) | (_header[3] << 16);
+			byte type = _header[0];
+			_headerLen = 0;
+			if (!type) {
+				// The block which ends the file
+				_state = kFinished;
+				break;
+			}
+			switch (type) {
+			case 1:
+				// Sound data, headed by the rate and the codec
+				if (length < 2) {
+					_state = kFinished;
+					break;
+				}
+				_left = length - 2;
+				_state = kSoundHeader;
+				_want = 2;
+				break;
+			case 2:
+				// More of the sound already being played, as it was described
+				_left = length;
+				_state = kBlockData;
+				break;
+			case 9:
+				if (length < 12) {
+					_state = kFinished;
+					break;
+				}
+				_left = length - 12;
+				_state = kNewSoundHeader;
+				_want = 12;
+				break;
+			default:
+				// Anything else, a label or a bit of text, is not for us
+				_left = length;
+				_state = kBlockSkip;
+				break;
+			}
+			break;
+		}
+
+		case kSoundHeader:
+			// _header[0] is the rate divisor, which loadStream() already read
+			if (_header[1] != 0) {
+				warning("HNM: unsupported VOC codec %d, dropping the sound", _header[1]);
+				_state = kBlockSkip;
+			} else {
+				_bufferFlags = Audio::FLAG_UNSIGNED;
+				_bytesPerSample = 1;
+				_state = kBlockData;
+			}
+			_headerLen = 0;
+			break;
+
+		case kNewSoundHeader: {
+			byte bits = _header[4];
+			byte channels = _header[5];
+			uint16 format = READ_LE_UINT16(_header + 6);
+			_headerLen = 0;
+			if (format != 0 || channels != 1 || (bits != 8 && bits != 16)) {
+				warning("HNM: unsupported VOC block, %d bits, %d channels, format %d",
+				        bits, channels, format);
+				_state = kBlockSkip;
+				break;
+			}
+			if (bits == 16) {
+				_bufferFlags = Audio::FLAG_16BITS | Audio::FLAG_LITTLE_ENDIAN;
+				_bytesPerSample = 2;
+			} else {
+				_bufferFlags = Audio::FLAG_UNSIGNED;
+				_bytesPerSample = 1;
+			}
+			_state = kBlockData;
+			break;
+		}
+
+		default:
+			break;
+		}
+	}
+
+	return samples;
 }
 
 HNMDecoder::APCAudioTrack::APCAudioTrack(uint sampleRate, byte stereo,
