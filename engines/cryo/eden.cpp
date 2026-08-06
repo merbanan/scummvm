@@ -1377,7 +1377,11 @@ void EdenGame::newCitadel(char area, int16 level, Room *room) {
 	while (cita->_id < level)
 		cita++;
 
-	uint16 index = ((room->_flags & 0xC0) >> 6);    //TODO: this is very wrong
+	// The two top flag bits choose a pair of entries and areas 4 and 6 take the
+	// second of the pair, so the bits come down five places and not six. Six
+	// halved the index and asked for entries 2 and 3, which stand empty in every
+	// citadel, so the room was left with no picture and no movie to show.
+	uint16 index = ((room->_flags & 0xC0) >> 5);
 	if (area == 4 || area == 6)
 		index++;
 
